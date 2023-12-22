@@ -30,13 +30,13 @@ fn main() {
 
     match cli.subcmd {
         Some(Commands::Set { key, value }) => {
-            kv.set(key, value);
+            kv.set(key, value).unwrap();
         }
         Some(Commands::Get { key }) => {
-            kv.get(key);
+            kv.get(key).unwrap();
         }
         Some(Commands::Remove { key }) => {
-            kv.remove(key);
+            kv.remove(key).unwrap();
         }
         None => {
             std::process::exit(1);
