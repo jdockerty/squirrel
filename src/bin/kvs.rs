@@ -6,7 +6,7 @@ use kvs::Result;
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct App {
-    #[arg(short, long, global = true, default_value = "~/.kvs_log", default_value = default_log_location().into_os_string())]
+    #[arg(short, long, global = true, default_value = default_log_location().into_os_string())]
     log_file: PathBuf,
 
     #[clap(subcommand)]
@@ -14,9 +14,9 @@ struct App {
 }
 
 fn default_log_location() -> PathBuf {
-    dirs::home_dir()
-        .expect("unable to find home directory")
-        .join(".kvs_log")
+    std::env::current_dir()
+        .expect("unable to find current directory")
+        .join(kvs::LOG_NAME)
 }
 
 #[derive(Debug, Subcommand)]
@@ -45,11 +45,19 @@ fn main() -> Result<()> {
         Some(Commands::Set { key, value }) => {
             kv.set(key, value)?;
         }
-        Some(Commands::Get { key }) => {
-            kv.get(key)?;
-        }
+        Some(Commands::Get { key }) => match kv.get(key)? {
+            Some(v) => {
+                println!("{}", v);
+            }
+            None => {
+                println!("Key not found");
+            }
+        },
         Some(Commands::Remove { key }) => {
-            kv.remove(key)?;
+            if let Err(kvs::KvStoreError::RemoveOperationWithNoKey) = kv.remove(key) {
+                println!("Key not found");
+                std::process::exit(1);
+            }
         }
         None => {
             std::process::exit(1);

@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    collections::HashMap,
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
 };
 use thiserror::Error;
+
+pub const LOG_NAME: &str = "kvs.log";
 
 pub type Result<T> = std::result::Result<T, KvStoreError>;
 
@@ -11,6 +14,12 @@ pub type Result<T> = std::result::Result<T, KvStoreError>;
 pub enum KvStoreError {
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Get operation was stored in the log")]
+    GetOperationInLog,
+
+    #[error("Cannot remove non-existent key")]
+    RemoveOperationWithNoKey,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -60,7 +69,11 @@ impl KvStore {
         P: Into<PathBuf>,
     {
         let mut store = KvStore::new();
-        store.log_location = path.into();
+        let mut path = path.into();
+        if path.is_dir() {
+            path = path.join(LOG_NAME);
+        }
+        store.log_location = path;
         Ok(store)
     }
 
@@ -85,14 +98,27 @@ impl KvStore {
 
         let reader = BufReader::new(log_file);
 
+        let mut h = HashMap::new();
+
+        // Rebuilt the state of the store from the log.
         reader.lines().for_each(|line| {
             // On writing, we end an entry with a new line, so we know that this is valid.
             let line = line.unwrap();
             let entry: LogEntry = serde_json::from_str(&line).unwrap();
-            println!("{:?}", entry);
+
+            match entry.operation {
+                Operation::Set => h.insert(entry.key.clone(), entry.value),
+                Operation::Remove => h.remove(&entry.key),
+                // Get entries are not written to the log, so this should not happen.
+                Operation::Get => None,
+            };
         });
 
-        Ok(None)
+        match h.get(&key) {
+            Some(Some(inserted_value)) => Ok(Some(inserted_value.to_string())),
+            Some(&None) => Ok(None),
+            None => Ok(None),
+        }
     }
 
     fn append_to_log(&mut self, entry: LogEntry) -> Result<()> {
@@ -102,24 +128,29 @@ impl KvStore {
             .open(self.log_location.as_path())?;
 
         serde_json::to_writer(&log_file, &entry).unwrap();
-        write!(&mut log_file, "\n").unwrap();
+        writeln!(&mut log_file).unwrap();
 
         // TODO: This is always 0 currently
-        // let offset = log_file.metadata()?.len();
-        // self.offset = offset;
+        let offset = log_file.metadata()?.len();
+        self.offset = offset;
         Ok(())
     }
 
     /// Remove a key from the store.
     pub fn remove(&mut self, key: String) -> Result<()> {
-        let entry = LogEntry {
-            operation: Operation::Remove,
-            key,
-            value: None,
-        };
+        match self.get(key.clone())? {
+            Some(_) => {
+                let entry = LogEntry {
+                    operation: Operation::Remove,
+                    key,
+                    value: None,
+                };
 
-        self.append_to_log(entry)?;
+                self.append_to_log(entry)?;
 
-        Ok(())
+                Ok(())
+            }
+            None => Err(KvStoreError::RemoveOperationWithNoKey),
+        }
     }
 }
