@@ -38,8 +38,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = App::parse();
 
-    let mut kv = kvs::KvStore::new();
-    kv.log_location = cli.log_file;
+    let mut kv = kvs::KvStore::open(cli.log_file)?;
 
     match cli.subcmd {
         Some(Commands::Set { key, value }) => {
