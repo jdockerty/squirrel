@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use kvs::Result;
@@ -6,33 +6,30 @@ use kvs::Result;
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct App {
-    #[arg(short, long, global = true, default_value = default_log_location().into_os_string())]
+    #[arg(short, long, global = true, default_value = default_log_location())]
     log_file: PathBuf,
 
     #[clap(subcommand)]
     subcmd: Option<Commands>,
 }
 
-fn default_log_location() -> PathBuf {
+fn default_log_location() -> OsString {
     std::env::current_dir()
         .expect("unable to find current directory")
-        .join(kvs::LOG_NAME)
+        .into_os_string()
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Set {
-        key: String,
-        value: String,
-    },
-    Get {
-        key: String,
-    },
+    /// Enter a key-value pair into the store.
+    Set { key: String, value: String },
 
+    /// Get a value from the store, providing a key.
+    Get { key: String },
+
+    /// Remove a value from the store, providing a key.
     #[clap(name = "rm")]
-    Remove {
-        key: String,
-    },
+    Remove { key: String },
 }
 
 fn main() -> Result<()> {

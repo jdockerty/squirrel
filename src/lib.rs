@@ -1,4 +1,3 @@
-use chrono;
 use serde::{Deserialize, Serialize};
 use std::io::{prelude::*, SeekFrom};
 use std::{
@@ -214,7 +213,6 @@ impl KvStore {
     /// If the key does not exist, then [`None`] is returned.
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
         let keydir = self.load_keydir()?;
-        println!("Keydir: {:?}", keydir);
 
         let log_location_err = self.log_location.as_path().display().to_string();
 
@@ -271,7 +269,7 @@ impl KvStore {
         let keydir = self.load_keydir()?;
 
         match keydir.get(&key) {
-            Some(offset) => {
+            Some(_offset) => {
                 let entry = LogEntry {
                     timestamp: chrono::Utc::now().timestamp(),
                     operation: Operation::Remove,
