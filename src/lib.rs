@@ -41,6 +41,7 @@ pub enum Operation {
 }
 
 /// An in-memory key-value store, backed by a [`HashMap`] from the standard library.
+#[derive(Debug)]
 pub struct KvStore {
     pub log_location: PathBuf,
 
@@ -278,7 +279,8 @@ impl KvStore {
                     value: None,
                     value_size: 0,
                 };
-                self.append_to_log(&entry)?;
+                let offset = self.append_to_log(&entry)?;
+                self.write_keydir(entry.key.clone(), offset)?;
                 Ok(())
             }
             None => Err(KvStoreError::RemoveOperationWithNoKey),
