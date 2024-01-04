@@ -13,6 +13,11 @@ pub const KEYDIR_NAME: &str = "kvs-keydir";
 
 pub type Result<T> = std::result::Result<T, KvStoreError>;
 
+enum Phase {
+    Init,
+    Standard,
+}
+
 #[derive(Debug, Error)]
 pub enum KvStoreError {
     #[error("I/O error on file {filename}: {source}")]
@@ -64,6 +69,8 @@ pub struct KvStore {
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
+    /// The maximum number of log files before older versions are deleted.
+    max_num_log_files: u64,
 
     file_index: usize,
 }
@@ -111,11 +118,66 @@ struct KeydirEntry {
     timestamp: i64,
 }
 
+fn create_log_file(store: &mut KvStore, phase: Phase) -> Result<std::fs::File> {
+    // Handling file creation based on the phase, this largely handles the
+    // special case where the initial log file is created.
+    match phase {
+        Phase::Init => {
+            let init_name = format!("{}0", store.log_location.join(LOG_PREFIX).display());
+            let log_file =
+                std::fs::File::create(&init_name).map_err(|e| KvStoreError::IoError {
+                    source: e,
+                    filename: init_name.clone(),
+                })?;
+            let active_file = LogFile {
+                active: true,
+                name: init_name.clone(),
+                index: store.file_index,
+            };
+
+            // Active file is always at the back of the queue.
+            store.log_files.push_back(active_file);
+            store.active_log_file = PathBuf::from(init_name.clone());
+            Ok(log_file)
+        }
+        Phase::Standard => {
+            let mut current_active_file = store.get_active_file();
+            let active_index = current_active_file.index;
+            current_active_file.active = false;
+            store.log_files[active_index] = current_active_file;
+
+            store.increment_file_index();
+            // The file index is incremented before the new file is created.
+            let next_log_file_name = store.current_log_file_name();
+            let log_file =
+                std::fs::File::create(&next_log_file_name).map_err(|e| KvStoreError::IoError {
+                    source: e,
+                    filename: next_log_file_name.clone(),
+                })?;
+            store.active_log_file = PathBuf::from(next_log_file_name.clone());
+
+            let new_file = LogFile {
+                active: true,
+                name: next_log_file_name,
+                index: store.file_index,
+            };
+
+            // Active file is always at the back of the queue.
+            store.log_files.push_back(new_file);
+
+            if store.log_files.len() > store.max_num_log_files as usize {
+                store.compact()?;
+            }
+            Ok(log_file)
+        }
+    }
+}
+
 impl KvStore {
     /// Create a new KvStore.
     ///
     /// The store is created in memory and is not persisted to disk.
-    fn new(max_log_file_size: u64) -> KvStore {
+    fn new(max_log_file_size: u64, max_num_log_files: u64) -> KvStore {
         KvStore {
             active_log_file: PathBuf::default(),
             log_location: PathBuf::default(),
@@ -123,6 +185,7 @@ impl KvStore {
             keydir: HashMap::new(),
             log_files: VecDeque::new(),
             max_log_file_size, // TODO: increase
+            max_num_log_files,
             file_index: 0,
         }
     }
@@ -132,7 +195,7 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(1024);
+        let mut store = KvStore::new(1024, 3);
 
         let path = path.into();
         let mut keydir_path = PathBuf::default();
@@ -144,41 +207,46 @@ impl KvStore {
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
 
+        create_log_file(&mut store, Phase::Init)?;
+
         // TODO: the create_new_log_file logic is the same here, but this is used
         // for initialisation.
         // Should we change the create_new_log_file signature to accept a KvStore
         // instead of self.
-        let full_path = format!(
-            "{}{}",
-            store.log_location.join(LOG_PREFIX).display(),
-            store.file_index
-        );
+        //let full_path = format!(
+        //    "{}{}",
+        //    store.log_location.join(LOG_PREFIX).display(),
+        //    store.file_index
+        //);
 
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(PathBuf::from(full_path.clone()))
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: full_path.clone(),
-            })?;
+        //// Increment the file index after initialisation.
+        //store.increment_file_index();
 
-        store.log_files.push_back(LogFile {
-            active: true,
-            name: full_path.clone(),
-            index: 0,
-        });
+        //std::fs::OpenOptions::new()
+        //    .write(true)
+        //    .create(true)
+        //    .open(PathBuf::from(full_path.clone()))
+        //    .map_err(|e| KvStoreError::IoError {
+        //        source: e,
+        //        filename: full_path.clone(),
+        //    })?;
 
-        store.active_log_file = full_path.clone().into();
+        //store.log_files.push_back(LogFile {
+        //    active: true,
+        //    name: full_path.clone(),
+        //    index: 0,
+        //});
 
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(store.keydir_location.as_path())
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: store.keydir_location.display().to_string(),
-            })?;
+        //store.active_log_file = full_path.clone().into();
+
+        //std::fs::OpenOptions::new()
+        //    .write(true)
+        //    .create(true)
+        //    .open(store.keydir_location.as_path())
+        //    .map_err(|e| KvStoreError::IoError {
+        //        source: e,
+        //        filename: store.keydir_location.display().to_string(),
+        //    })?;
         Ok(store)
     }
 
@@ -186,7 +254,7 @@ impl KvStore {
         format!(
             "{}{}",
             self.log_location.join(LOG_PREFIX).display(),
-            self.file_index
+            self.get_active_file().index
         )
     }
 
@@ -194,85 +262,98 @@ impl KvStore {
         self.file_index += 1;
     }
 
-    fn get_active_file_index(&self) -> usize {
+    fn get_active_file(&self) -> LogFile {
         self.log_files
-            .iter()
-            .position(|file| file.active)
+            .back()
             .expect("No active file found")
+            .to_owned()
     }
 
-    fn create_new_log_file(&mut self) -> Result<()> {
-        let current_name = self.current_log_file_name();
-        let active_index = self.get_active_file_index();
-        let current_file = &mut self.log_files[active_index];
-        current_file.active = false;
+    //fn create_new_log_file(&mut store: KvStore) -> Result<()> {
+    //    println!("Index: {}", store..file_index);
+    //    let mut current_file = self.get_active_file();
+    //    let current_name = current_file.name.clone();
+    //    println!("Current log file: {}", current_name);
 
-        self.increment_file_index();
+    //    // Back of the queue is the active file.
+    //    //
+    //    let active_index = current_file.index;
+    //    current_file.active = false;
+    //    self.log_files[active_index] = current_file;
 
-        let next_log_file_name = self.current_log_file_name();
-        self.active_log_file = PathBuf::from(next_log_file_name.clone());
+    //    println!("Current file index: {}", self.file_index);
+    //    self.increment_file_index();
+    //    println!("New file index: {}", self.file_index);
 
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(next_log_file_name.clone())
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: current_name.clone(),
-            })?;
+    //    let next_log_file_name = self.current_log_file_name();
+    //    println!("Creating new log file: {}", next_log_file_name);
+    //    self.active_log_file = PathBuf::from(next_log_file_name.clone());
 
-        self.log_files.push_back(LogFile {
-            active: true,
-            name: next_log_file_name,
-            index: self.file_index,
-        });
+    //    std::fs::OpenOptions::new()
+    //        .write(true)
+    //        .create(true)
+    //        .open(next_log_file_name.clone())
+    //        .map_err(|e| KvStoreError::IoError {
+    //            source: e,
+    //            filename: current_name.clone(),
+    //        })?;
 
-        Ok(())
-    }
+    //    self.log_files.push_back(LogFile {
+    //        active: true,
+    //        name: next_log_file_name,
+    //        index: self.file_index,
+    //    });
+
+    //    if self.log_files.len() > self.max_num_log_files as usize {
+    //        self.compact()?;
+    //    }
+
+    //    Ok(())
+    //}
 
     fn open_active_log_file(&mut self) -> Result<std::fs::File> {
-        Ok(std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(true)
-            .open(&self.active_log_file.as_path())
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-            })?)
+        if std::path::Path::exists(self.active_log_file.as_path()) {
+            println!("Opening file: {:?}", self.active_log_file);
+            // Open the file if it exists.
+            Ok(std::fs::OpenOptions::new()
+                .read(true)
+                .create(true)
+                .append(true)
+                .open(&self.active_log_file.as_path())
+                .map_err(|e| KvStoreError::IoError {
+                    source: e,
+                    filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+                })?)
+        } else {
+            println!("Creating initial log file");
+            // File needs to be created.
+            Ok(create_log_file(self, Phase::Init)?)
+        }
     }
 
     fn compact(&mut self) -> Result<()> {
         println!("Compacting");
 
-        for file in &self.log_files {
-            println!("Active index: {}", self.get_active_file_index());
-            if file.active {
-                println!("Skipping active file {}", file.name);
-                self.file_index = file.index;
-                // Cannot compact an active file.
-                continue;
-            }
-            println!("Removing file {}", file.name);
+        while self.log_files.len() > self.max_num_log_files as usize {
+            println!("Files: {:?}", self.log_files);
+            let file = self.log_files.pop_front().unwrap();
+            println!("Removing file: {:?}", file);
             std::fs::remove_file(&file.name).map_err(|e| KvStoreError::IoError {
                 source: e,
                 filename: file.name.clone(),
             })?;
         }
 
-        for file in self.log_files.clone().iter().filter(|file| !file.active) {
-            println!("Removing file from log_files: {:?}", file);
-            self.log_files.remove(file.index);
-        }
         println!("Compaction complete: {:?}", self.log_files);
 
-        self.file_index = self.get_active_file_index();
+        self.file_index = self.get_active_file().index;
 
         Ok(())
     }
 
     fn append_to_log(&mut self, entry: &LogEntry) -> Result<u64> {
         let mut log_file = self.open_active_log_file()?;
+        println!("Log file: {:?}, Entry: {:?}", log_file, entry);
 
         // The offset is where the last entry in the log file ends, this is because
         // the log file is an append-only log.
@@ -285,16 +366,11 @@ impl KvStore {
             .len();
 
         if offset > self.max_log_file_size {
-            self.create_new_log_file()?;
-
+            println!("Log file is too large, creating new file");
             // Update to new file.
-            log_file = self.open_active_log_file()?;
+            log_file = create_log_file(self, Phase::Standard)?;
             // Reset offset to 0.
             offset = 0;
-        }
-
-        if self.log_files.len() > 1 {
-            self.compact()?;
         }
 
         // TODO: JSON likely isn't the best format for this, but it's easy to work with for now.
@@ -385,13 +461,8 @@ impl KvStore {
         let keydir = self.load_keydir()?;
         match keydir.get(&key) {
             Some(entry) => {
-                let log_file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .open(self.active_log_file.as_path())
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                    })?;
+                let log_file = self.open_active_log_file()?;
+                println!("Log file: {:?}", log_file);
 
                 let log_file_size = log_file
                     .metadata()
@@ -402,6 +473,7 @@ impl KvStore {
                     .len();
 
                 if log_file_size == 0 {
+                    println!("Log file is empty");
                     // Edge case for the log file being empty, there is no value to return.
                     return Ok(None);
                 }
@@ -421,6 +493,7 @@ impl KvStore {
                         filename: self.active_log_file.as_path().to_string_lossy().to_string(),
                     })?;
                 let entry: LogEntry = serde_json::from_slice(&v)?;
+                println!("Entry: {:?}", entry);
                 match entry.value {
                     Some(value) => Ok(Some(value)),
                     // TODO: this is a tombstone value.
