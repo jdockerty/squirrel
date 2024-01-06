@@ -67,6 +67,7 @@ pub struct KvStore {
     /// The maximum number of log files before older versions are deleted.
     max_num_log_files: u64,
 
+    /// Index used for the log file.
     file_index: usize,
 }
 
@@ -82,9 +83,6 @@ struct LogFile {
     /// Name of the file, the full name can be constructed by appending this to the
     /// [`log location`].
     name: String,
-
-    /// Index of the file in the log file list.
-    index: usize,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -104,6 +102,9 @@ struct LogEntry {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct KeydirEntry {
+    /// The file where the entry is stored.
+    file_id: PathBuf,
+
     /// The offset of the entry in the log file.
     offset: u64,
 
@@ -135,14 +136,10 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(1024, 10);
+        let mut store = KvStore::new(1024, 3);
 
         let path = path.into();
-        let mut keydir_path = PathBuf::default();
-
-        if path.is_dir() {
-            keydir_path = path.join(KEYDIR_NAME);
-        }
+        let keydir_path = path.join(KEYDIR_NAME);
 
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
@@ -166,7 +163,6 @@ impl KvStore {
         let active_file = LogFile {
             active: true,
             name: init_name.clone(),
-            index: self.file_index,
         };
 
         // Active file is always at the back of the queue.
@@ -202,7 +198,6 @@ impl KvStore {
         let new_file = LogFile {
             active: true,
             name: next_log_file_name,
-            index: self.file_index,
         };
 
         // Active file is always at the back of the queue.
@@ -262,7 +257,6 @@ impl KvStore {
         println!("Compacting");
 
         while self.log_files.len() > self.max_num_log_files as usize {
-            println!("Files: {:?}", self.log_files);
             let file = self
                 .log_files
                 .pop_front()
@@ -272,9 +266,6 @@ impl KvStore {
                 filename: file.name.clone(),
             })?;
         }
-
-        println!("Compaction complete: {:?}", self.log_files);
-        println!("{}", self.active_log_file.display());
 
         Ok(())
     }
@@ -352,7 +343,9 @@ impl KvStore {
             })?;
 
         let mut keydir = self.load_keydir()?;
+        let active_file = &self.active_log_file;
         let entry = KeydirEntry {
+            file_id: active_file.to_path_buf(),
             offset,
             size: 0, // TODO: calculate size
             timestamp: chrono::Utc::now().timestamp(),
