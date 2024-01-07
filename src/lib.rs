@@ -27,6 +27,9 @@ pub enum KvStoreError {
     #[error("Cannot remove non-existent key")]
     RemoveOperationWithNoKey,
 
+    #[error("Tried compacting the active file")]
+    ActiveFileCompaction,
+
     #[error("Unable to serialize entry: {0}")]
     SerializeError(#[from] serde_json::Error),
 
@@ -65,10 +68,17 @@ pub struct KvStore {
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
     /// The maximum number of log files before older versions are deleted.
-    max_num_log_files: u64,
+    max_num_log_files: usize,
 
     /// Index used for the log file.
     file_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Phase {
+    Active,
+    Inactive,
+    Compacted,
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +88,7 @@ struct LogFile {
     /// Once a file is inactive, it will never become active again.
     ///
     /// Only inactive files are marked for compaction/merging.
-    active: bool,
+    phase: Phase,
 
     /// Name of the file, the full name can be constructed by appending this to the
     /// [`log location`].
@@ -118,7 +128,7 @@ impl KvStore {
     /// Create a new KvStore.
     ///
     /// The store is created in memory and is not persisted to disk.
-    fn new(max_log_file_size: u64, max_num_log_files: u64) -> KvStore {
+    fn new(max_log_file_size: u64, max_num_log_files: usize) -> KvStore {
         KvStore {
             active_log_file: PathBuf::default(),
             log_location: PathBuf::default(),
@@ -136,7 +146,7 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(1024, 3);
+        let mut store = KvStore::new(48000, 3);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
@@ -161,7 +171,7 @@ impl KvStore {
             .open(&init_name)
             .unwrap();
         let active_file = LogFile {
-            active: true,
+            phase: Phase::Active,
             name: init_name.clone(),
         };
 
@@ -177,7 +187,7 @@ impl KvStore {
     /// and can be compacted at a later time.
     fn set_current_file_inactive(&mut self) {
         let (mut current_active_file, idx) = self.get_active_file();
-        current_active_file.active = false;
+        current_active_file.phase = Phase::Inactive;
         self.log_files[idx] = current_active_file;
     }
 
@@ -196,15 +206,16 @@ impl KvStore {
         self.active_log_file = PathBuf::from(next_log_file_name.clone());
 
         let new_file = LogFile {
-            active: true,
+            phase: Phase::Active,
             name: next_log_file_name,
         };
 
         // Active file is always at the back of the queue.
         self.log_files.push_back(new_file);
 
-        if self.log_files.len() > self.max_num_log_files as usize {
-            self.compact()?;
+        let inactive_files = self.get_inactive_files();
+        if inactive_files.len() > self.max_num_log_files {
+            self.compact(inactive_files)?;
         }
         Ok(log_file)
     }
@@ -252,20 +263,75 @@ impl KvStore {
         }
     }
 
-    /// Perform compaction on the inactive log files.
-    fn compact(&mut self) -> Result<()> {
-        println!("Compacting");
+    fn get_inactive_files(&mut self) -> Vec<LogFile> {
+        let mut inactive_files = Vec::new();
 
-        while self.log_files.len() > self.max_num_log_files as usize {
-            let file = self
-                .log_files
-                .pop_front()
-                .expect("Compaction requires some files to occur");
-            std::fs::remove_file(&file.name).map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: file.name.clone(),
-            })?;
+        self.log_files.clone().iter_mut().for_each(|file| {
+            if file.phase == Phase::Active || file.phase == Phase::Compacted {
+                return;
+            }
+            inactive_files.push(file.to_owned());
+        });
+
+        inactive_files
+    }
+
+    /// Perform compaction on the inactive log files.
+    fn compact(&mut self, inactive_files: Vec<LogFile>) -> Result<()> {
+        println!("Inactive files: {:?}", inactive_files);
+        if inactive_files.len() == 0 {
+            return Ok(());
         }
+        self.log_files
+            .make_contiguous()
+            .sort_by_key(|file| file.name.clone());
+        println!("Files: {:?}", self.log_files);
+
+        let compacted_filename = format!("{}-compacted", self.active_log_file.display());
+        println!("Compacted filename: {:?}", compacted_filename);
+
+        let mut compaction_file = std::fs::File::create(&compacted_filename).unwrap();
+        for log_file in inactive_files {
+            if log_file.phase == Phase::Active {
+                return Err(KvStoreError::ActiveFileCompaction);
+            }
+
+            println!("Compacting file: {:?}", log_file);
+            for (_key, ref mut keydir_entry) in self.keydir.iter_mut() {
+                let file = std::fs::File::open(&keydir_entry.file_id).unwrap();
+                let mut buf = BufReader::new(file);
+                buf.seek(SeekFrom::Start(keydir_entry.offset)).unwrap();
+                let mut v = Vec::new();
+                buf.read_until(b'\n', &mut v).unwrap();
+                let log_entry: LogEntry = serde_json::from_slice(&v).unwrap();
+                serde_json::to_writer(&mut compaction_file, &log_entry).unwrap();
+                writeln!(compaction_file).unwrap();
+                keydir_entry.file_id = PathBuf::from(compacted_filename.clone());
+                keydir_entry.offset = compaction_file
+                    .metadata()
+                    .unwrap()
+                    .len()
+                    .try_into()
+                    .unwrap();
+            }
+
+            println!("Removing file: {:?}", log_file.name);
+            std::fs::remove_file(&log_file.name).unwrap();
+            let idx = self
+                .log_files
+                .binary_search_by_key(&log_file.name, |file| file.name.clone())
+                .unwrap();
+            println!("Removing file from log_files: {:?}", self.log_files[idx]);
+            self.log_files.remove(idx);
+        }
+
+        println!("Pushing compacted file: {:?}", compacted_filename);
+        self.log_files.push_front(LogFile {
+            phase: Phase::Compacted,
+            name: compacted_filename,
+        });
+
+        println!("{:?}", self.log_files);
 
         Ok(())
     }
@@ -332,7 +398,7 @@ impl KvStore {
         Ok(keydir)
     }
 
-    fn write_keydir(&mut self, key: String, offset: u64) -> Result<()> {
+    fn write_keydir(&mut self, file_id: PathBuf, key: String, offset: u64) -> Result<()> {
         let keydir_file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -343,9 +409,8 @@ impl KvStore {
             })?;
 
         let mut keydir = self.load_keydir()?;
-        let active_file = &self.active_log_file;
         let entry = KeydirEntry {
-            file_id: active_file.to_path_buf(),
+            file_id,
             offset,
             size: 0, // TODO: calculate size
             timestamp: chrono::Utc::now().timestamp(),
@@ -369,7 +434,7 @@ impl KvStore {
         };
 
         let offset = self.append_to_log(&entry)?;
-        self.write_keydir(entry.key.clone(), offset)?;
+        self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
         Ok(())
     }
 
@@ -434,7 +499,7 @@ impl KvStore {
                     value_size: 0,
                 };
                 let offset = self.append_to_log(&entry)?;
-                self.write_keydir(entry.key.clone(), offset)?;
+                self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
                 Ok(())
             }
             None => Err(KvStoreError::RemoveOperationWithNoKey),
