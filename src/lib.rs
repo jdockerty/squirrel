@@ -52,10 +52,12 @@ pub struct KvStore {
 
     active_log_file: PathBuf,
 
-    /// Keydir is an in-memory hashmap of keys to their respective log file, which
+    /// Keydir is an in-memory (traditionally) hashmap of keys to their respective log file, which
     /// contains the offset to the entry in the file.
     ///
-    /// This represents L1 data and it committed to disk.
+    /// This would traditionally be in-memory, but as we also have a CLI portion of the
+    /// application, we persist the keydir to disk so that it can be loaded for various
+    /// operations.
     keydir: BTreeMap<String, KeydirEntry>,
 
     /// The maximum size of a log file in bytes.
@@ -186,51 +188,40 @@ impl KvStore {
         self.file_index += 1;
     }
 
-    fn open_active_log_file(&mut self) -> Result<std::fs::File> {
-        if std::path::Path::exists(self.active_log_file.as_path()) {
-            // Open the file if it exists.
-            Ok(std::fs::OpenOptions::new()
-                .read(true)
-                .create(true)
-                .append(true)
-                .open(&self.active_log_file.as_path())
-                .map_err(|e| KvStoreError::IoError {
-                    source: e,
-                    filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                })?)
-        } else {
-            // File needs to be created.
-            Ok(self.create_log_file()?)
-        }
-    }
-
     /// Perform compaction on the inactive log files.
     fn compact(&mut self, inactive_files: Vec<PathBuf>) -> Result<()> {
-        println!("Inactive files: {:?}", inactive_files);
         if inactive_files.len() == 0 {
             return Ok(());
         }
 
+        println!("Compacting inactive files: {:?}", inactive_files);
         let compacted_filename = format!("{}-compacted", self.active_log_file.display());
         println!("Compacted filename: {:?}", compacted_filename);
 
-        let mut compaction_file = std::fs::File::create(&compacted_filename).unwrap();
+        let mut compaction_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&compacted_filename)
+            .unwrap();
+
+        let mut keydir = self.load_keydir()?;
+
         for log_file in inactive_files {
-            println!("Compacting file: {:?}", log_file);
             // Reads entire file into memory, not efficient but good enough for now.
             let file_data = std::fs::read(&log_file).expect("unable to read log file");
             for line in file_data.split(|&b| b == b'\n') {
                 if let Ok(log_entry) = bincode::deserialize::<LogEntry>(line) {
-                    if let Some(entry_value) = log_entry.value {
-                        if let Some(keydir_entry) = self.keydir.get_mut(&log_entry.key) {
-                            if keydir_entry.timestamp == log_entry.timestamp {
-                                bincode::serialize_into(&mut compaction_file, &entry_value)
-                                    .unwrap();
+                    if let Some(_) = log_entry.value {
+                        if let Some(keydir_entry) = keydir.get_mut(&log_entry.key) {
+                            // TODO: this is not correct.
+                            if log_entry.timestamp >= keydir_entry.timestamp {
+                                let offset = compaction_file.metadata().unwrap().len();
+                                bincode::serialize_into(&mut compaction_file, &log_entry).unwrap();
                                 writeln!(compaction_file).unwrap();
                                 self.write_keydir(
                                     compacted_filename.clone().into(),
                                     log_entry.key,
-                                    compaction_file.metadata().unwrap().len(),
+                                    offset,
                                 )
                                 .unwrap();
                             }
@@ -238,7 +229,7 @@ impl KvStore {
                     }
                 }
             }
-            // Remove old log file after compaction.
+            // Remove old log file after it has been processed.
             std::fs::remove_file(&log_file).unwrap();
         }
 
@@ -246,7 +237,15 @@ impl KvStore {
     }
 
     fn append_to_log(&mut self, entry: &LogEntry) -> Result<u64> {
-        let mut log_file = self.open_active_log_file()?;
+        let mut log_file = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.active_log_file.as_path())
+            .map_err(|e| KvStoreError::IoError {
+                source: e,
+                filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+            })?;
 
         // The offset is where the last entry in the log file ends, this is because
         // the log file is an append-only log.
@@ -266,10 +265,7 @@ impl KvStore {
 
         bincode::serialize_into(&mut log_file, &entry)
             .map_err(KvStoreError::BincodeSerialization)?;
-        writeln!(&log_file).map_err(|e| KvStoreError::IoError {
-            source: e,
-            filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-        })?;
+        writeln!(log_file).unwrap();
 
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
@@ -307,7 +303,7 @@ impl KvStore {
     }
 
     fn write_keydir(&mut self, file_id: PathBuf, key: String, offset: u64) -> Result<()> {
-        let mut keydir_file = std::fs::OpenOptions::new()
+        let keydir_file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open(self.keydir_location.as_path())
@@ -321,23 +317,19 @@ impl KvStore {
             file_id,
             offset,
             size: key.len(),
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
         };
         keydir.insert(key, entry);
 
         bincode::serialize_into(&keydir_file, &keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
-        writeln!(&mut keydir_file).map_err(|e| KvStoreError::IoError {
-            source: e,
-            filename: self.keydir_location.display().to_string(),
-        })?;
         Ok(())
     }
 
     /// Set the value of a key by inserting the value into the store for the given key.
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         let entry = LogEntry {
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
             operation: Operation::Set,
             key_size: key.len(),
             key,
@@ -356,7 +348,15 @@ impl KvStore {
         let keydir = self.load_keydir()?;
         match keydir.get(&key) {
             Some(entry) => {
-                let log_file = self.open_active_log_file()?;
+                let log_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .create(true)
+                    .open(&self.active_log_file.as_path())
+                    .map_err(|e| KvStoreError::IoError {
+                        source: e,
+                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+                    })?;
 
                 let log_file_size = log_file
                     .metadata()
@@ -385,8 +385,8 @@ impl KvStore {
                         source: e,
                         filename: self.active_log_file.as_path().to_string_lossy().to_string(),
                     })?;
-                let entry: LogEntry = bincode::deserialize(&v)?;
-                match entry.value {
+                let log_entry: LogEntry = bincode::deserialize(&v)?;
+                match log_entry.value {
                     Some(value) => Ok(Some(value)),
                     // TODO: this is a tombstone value.
                     None => Ok(None),
@@ -403,7 +403,7 @@ impl KvStore {
         match keydir.get(&key) {
             Some(_offset) => {
                 let entry = LogEntry {
-                    timestamp: chrono::Utc::now().timestamp(),
+                    timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
                     operation: Operation::Remove,
                     key_size: key.len(),
                     key,
