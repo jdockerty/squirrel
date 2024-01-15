@@ -1,8 +1,8 @@
+use glob::glob;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::io::{prelude::*, SeekFrom};
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
 };
@@ -30,10 +30,7 @@ pub enum KvStoreError {
     #[error("Tried compacting the active file")]
     ActiveFileCompaction,
 
-    #[error("Unable to serialize entry: {0}")]
-    SerializeError(#[from] serde_json::Error),
-
-    #[error("Unable to serialize keydir: {0}")]
+    #[error("Unable to serialize: {0}")]
     BincodeSerialization(#[from] bincode::Error),
 }
 
@@ -44,7 +41,7 @@ pub enum Operation {
     Remove,
 }
 
-/// An in-memory key-value store, backed by a [`HashMap`] from the standard library.
+/// An in-memory key-value store, backed by a [`BTreeMap`] from the standard library.
 #[derive(Debug)]
 pub struct KvStore {
     pub log_location: PathBuf,
@@ -55,15 +52,9 @@ pub struct KvStore {
 
     /// Keydir is an in-memory hashmap of keys to their respective log file, which
     /// contains the offset to the entry in the file.
-    keydir: HashMap<String, KeydirEntry>,
+    keydir: BTreeMap<String, KeydirEntry>,
 
     active_log_file: PathBuf,
-
-    /// Multiple log files are used to store the entries in the store.
-    ///
-    /// When a file reaches a certain size, defined by [`max_log_file_size`], a new file is
-    /// created.
-    log_files: VecDeque<LogFile>,
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
@@ -72,27 +63,6 @@ pub struct KvStore {
 
     /// Index used for the log file.
     file_index: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Phase {
-    Active,
-    Inactive,
-    Compacted,
-}
-
-#[derive(Debug, Clone)]
-struct LogFile {
-    /// Whether the file is active or not.
-    ///
-    /// Once a file is inactive, it will never become active again.
-    ///
-    /// Only inactive files are marked for compaction/merging.
-    phase: Phase,
-
-    /// Name of the file, the full name can be constructed by appending this to the
-    /// [`log location`].
-    name: String,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -133,8 +103,7 @@ impl KvStore {
             active_log_file: PathBuf::default(),
             log_location: PathBuf::default(),
             keydir_location: PathBuf::default(),
-            keydir: HashMap::new(),
-            log_files: VecDeque::new(),
+            keydir: BTreeMap::new(),
             max_log_file_size, // TODO: increase
             max_num_log_files,
             file_index: 0,
@@ -170,30 +139,12 @@ impl KvStore {
             .read(true)
             .open(&init_name)
             .unwrap();
-        let active_file = LogFile {
-            phase: Phase::Active,
-            name: init_name.clone(),
-        };
 
-        // Active file is always at the back of the queue.
-        self.log_files.push_back(active_file);
         self.active_log_file = PathBuf::from(init_name.clone());
         Ok(log_file)
     }
 
-    /// Set the current active file as inactive.
-    ///
-    /// This is used when a new file is created, the old file is marked as inactive
-    /// and can be compacted at a later time.
-    fn set_current_file_inactive(&mut self) {
-        let (mut current_active_file, idx) = self.get_active_file();
-        current_active_file.phase = Phase::Inactive;
-        self.log_files[idx] = current_active_file;
-    }
-
     fn create_log_file(&mut self) -> Result<std::fs::File> {
-        self.set_current_file_inactive();
-
         let next_log_file_name = self.next_log_file_name();
         let log_file = std::fs::OpenOptions::new()
             .create(true)
@@ -205,15 +156,12 @@ impl KvStore {
             })?;
         self.active_log_file = PathBuf::from(next_log_file_name.clone());
 
-        let new_file = LogFile {
-            phase: Phase::Active,
-            name: next_log_file_name,
-        };
-
-        // Active file is always at the back of the queue.
-        self.log_files.push_back(new_file);
-
-        let inactive_files = self.get_inactive_files();
+        //let inactive_files = self.get_inactive_files();
+        let inactive_files = glob(&format!("{}/kvs*", self.log_location.display()))
+            .unwrap()
+            .map(|p| p.unwrap())
+            .filter(|p| !p.to_string_lossy().contains("compacted"))
+            .collect::<Vec<_>>();
         if inactive_files.len() > self.max_num_log_files {
             self.compact(inactive_files)?;
         }
@@ -231,18 +179,6 @@ impl KvStore {
 
     fn increment_file_index(&mut self) {
         self.file_index += 1;
-    }
-
-    /// Retrieve the active file and its index, since this is always at the back of the
-    /// queue we know it is the last index.
-    fn get_active_file(&self) -> (LogFile, usize) {
-        (
-            self.log_files
-                .back()
-                .expect("No active file found")
-                .to_owned(),
-            self.log_files.len() - 1,
-        )
     }
 
     fn open_active_log_file(&mut self) -> Result<std::fs::File> {
@@ -263,38 +199,18 @@ impl KvStore {
         }
     }
 
-    fn get_inactive_files(&mut self) -> Vec<LogFile> {
-        let mut inactive_files = Vec::new();
-
-        self.log_files.clone().iter_mut().for_each(|file| {
-            if file.phase == Phase::Active || file.phase == Phase::Compacted {
-                return;
-            }
-            inactive_files.push(file.to_owned());
-        });
-
-        inactive_files
-    }
-
     /// Perform compaction on the inactive log files.
-    fn compact(&mut self, inactive_files: Vec<LogFile>) -> Result<()> {
+    fn compact(&mut self, inactive_files: Vec<PathBuf>) -> Result<()> {
         println!("Inactive files: {:?}", inactive_files);
         if inactive_files.len() == 0 {
             return Ok(());
         }
-        self.log_files
-            .make_contiguous()
-            .sort_by_key(|file| file.name.clone());
-        println!("Files: {:?}", self.log_files);
 
         let compacted_filename = format!("{}-compacted", self.active_log_file.display());
         println!("Compacted filename: {:?}", compacted_filename);
 
         let mut compaction_file = std::fs::File::create(&compacted_filename).unwrap();
         for log_file in inactive_files {
-            if log_file.phase == Phase::Active {
-                return Err(KvStoreError::ActiveFileCompaction);
-            }
 
             println!("Compacting file: {:?}", log_file);
             for (_key, ref mut keydir_entry) in self.keydir.iter_mut() {
@@ -303,8 +219,8 @@ impl KvStore {
                 buf.seek(SeekFrom::Start(keydir_entry.offset)).unwrap();
                 let mut v = Vec::new();
                 buf.read_until(b'\n', &mut v).unwrap();
-                let log_entry: LogEntry = serde_json::from_slice(&v).unwrap();
-                serde_json::to_writer(&mut compaction_file, &log_entry).unwrap();
+                let log_entry: LogEntry = bincode::deserialize(&v).unwrap();
+                bincode::serialize_into(&mut compaction_file, &log_entry).unwrap();
                 writeln!(compaction_file).unwrap();
                 keydir_entry.file_id = PathBuf::from(compacted_filename.clone());
                 keydir_entry.offset = compaction_file
@@ -314,24 +230,7 @@ impl KvStore {
                     .try_into()
                     .unwrap();
             }
-
-            println!("Removing file: {:?}", log_file.name);
-            std::fs::remove_file(&log_file.name).unwrap();
-            let idx = self
-                .log_files
-                .binary_search_by_key(&log_file.name, |file| file.name.clone())
-                .unwrap();
-            println!("Removing file from log_files: {:?}", self.log_files[idx]);
-            self.log_files.remove(idx);
         }
-
-        println!("Pushing compacted file: {:?}", compacted_filename);
-        self.log_files.push_front(LogFile {
-            phase: Phase::Compacted,
-            name: compacted_filename,
-        });
-
-        println!("{:?}", self.log_files);
 
         Ok(())
     }
@@ -357,7 +256,8 @@ impl KvStore {
 
         // TODO: JSON likely isn't the best format for this, but it's easy to work with for now.
         // Investigate another serialisation format in the future (bincode?).
-        serde_json::to_writer(&mut log_file, &entry).map_err(KvStoreError::SerializeError)?;
+        bincode::serialize_into(&mut log_file, &entry)
+            .map_err(KvStoreError::BincodeSerialization)?;
         writeln!(log_file).map_err(|e| KvStoreError::IoError {
             source: e,
             filename: self.active_log_file.as_path().to_string_lossy().to_string(),
@@ -368,7 +268,7 @@ impl KvStore {
         Ok(offset)
     }
 
-    fn load_keydir(&mut self) -> Result<HashMap<String, KeydirEntry>> {
+    fn load_keydir(&mut self) -> Result<BTreeMap<String, KeydirEntry>> {
         let keydir_location = self.keydir_location.display().to_string();
         let keydir_file = std::fs::OpenOptions::new()
             .read(true)
@@ -389,10 +289,10 @@ impl KvStore {
             .len();
 
         if keydir_file_size == 0 {
-            return Ok(HashMap::new());
+            return Ok(BTreeMap::new());
         }
 
-        let keydir: HashMap<String, KeydirEntry> =
+        let keydir: BTreeMap<String, KeydirEntry> =
             bincode::deserialize_from(keydir_file).map_err(KvStoreError::BincodeSerialization)?;
         self.keydir = keydir.clone();
         Ok(keydir)
@@ -473,7 +373,7 @@ impl KvStore {
                         source: e,
                         filename: self.active_log_file.as_path().to_string_lossy().to_string(),
                     })?;
-                let entry: LogEntry = serde_json::from_slice(&v)?;
+                let entry: LogEntry = bincode::deserialize(&v)?;
                 match entry.value {
                     Some(value) => Ok(Some(value)),
                     // TODO: this is a tombstone value.
