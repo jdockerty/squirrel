@@ -359,24 +359,27 @@ impl KvStore {
     /// Retrieve the value of a key from the store.
     /// If the key does not exist, then [`None`] is returned.
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
+        // We load the keydir from disk here because we have a CLI aspect to the application
+        // which means that the keydir is not always in memory, loading it from disk gets around
+        // that.
         let keydir = self.load_keydir()?;
         match keydir.get(&key) {
             Some(entry) => {
-                let log_file = std::fs::OpenOptions::new()
+                let mut log_file = std::fs::OpenOptions::new()
                     .read(true)
                     .append(true)
                     .create(true)
-                    .open(&self.active_log_file.as_path())
+                    .open(entry.file_id.as_path())
                     .map_err(|e| KvStoreError::IoError {
                         source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
                     })?;
 
                 let log_file_size = log_file
                     .metadata()
                     .map_err(|e| KvStoreError::IoError {
                         source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
                     })?
                     .len();
 
