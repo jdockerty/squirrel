@@ -276,7 +276,6 @@ impl KvStore {
 
         bincode::serialize_into(&mut log_file, &entry)
             .map_err(KvStoreError::BincodeSerialization)?;
-        writeln!(log_file).unwrap();
 
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
@@ -386,24 +385,18 @@ impl KvStore {
                     return Ok(None);
                 }
 
-                let mut buf = BufReader::new(log_file);
-
                 // Seek to the position provided by the keydir and serialize the entry.
-                let mut v = Vec::new();
-                buf.seek(SeekFrom::Start(entry.offset))
-                    .map_err(|e| KvStoreError::IoError {
+                log_file.seek(SeekFrom::Start(entry.offset)).map_err(|e| {
+                    KvStoreError::IoError {
                         source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                    })?;
-                buf.read_until(b'\n', &mut v)
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                    })?;
-                let log_entry: LogEntry = bincode::deserialize(&v)?;
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
+                    }
+                })?;
+                let log_entry: LogEntry = bincode::deserialize_from(log_file)?;
                 match log_entry.value {
                     Some(value) => Ok(Some(value)),
-                    // TODO: this is a tombstone value.
+                    // This is a tombstone value and equates to a deleted key and
+                    // the "Key not found" scenario.
                     None => Ok(None),
                 }
             }
