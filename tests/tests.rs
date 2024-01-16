@@ -292,7 +292,6 @@ fn compaction() -> Result<()> {
         let mut store = KvStore::open(temp_dir.path())?;
         for key_id in 0..100 {
             let key = format!("key{}", key_id);
-            println!("Getting {}", key);
             assert_eq!(store.get(key)?, Some(format!("{}", iter)));
         }
         return Ok(());

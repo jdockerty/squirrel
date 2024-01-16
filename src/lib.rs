@@ -1,15 +1,15 @@
 use glob::glob;
 use serde::{Deserialize, Serialize};
 use std::io::{prelude::*, SeekFrom};
-use std::{
-    collections::BTreeMap,
-    io::{BufRead, BufReader, Write},
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, path::PathBuf};
 use thiserror::Error;
 
 pub const LOG_PREFIX: &str = "kvs.log";
 pub const KEYDIR_NAME: &str = "kvs-keydir";
+
+// Smaller sizes for forcing compaction in tests.
+const MAX_LOG_FILE_SIZE: u64 = 1024; // 1 MiB
+const MAX_NUM_LOG_FILES: usize = 5;
 
 pub type Result<T> = std::result::Result<T, KvStoreError>;
 
@@ -119,7 +119,7 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(48000, 3);
+        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
