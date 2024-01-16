@@ -160,8 +160,11 @@ impl KvStore {
             })?;
         self.active_log_file = PathBuf::from(next_log_file_name.clone());
 
+        // Do not consider files which satisfy the below criterion as candidates for compaction.
         let no_compact = |p: &PathBuf| {
-            !p.to_string_lossy().contains("compacted") || !p.to_string_lossy().contains("keydir")
+            !p.to_string_lossy().contains("compacted")
+                || !p.to_string_lossy().contains("keydir")
+                || *p != self.active_log_file
         };
 
         let inactive_files = glob(&format!("{}/kvs.log*", self.log_location.display()))
