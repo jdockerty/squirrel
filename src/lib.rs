@@ -192,14 +192,16 @@ impl KvStore {
     }
 
     /// Perform compaction on the inactive log files.
+    ///
+    /// This works by reading the keydir (where our most recent values are stored) and then placing
+    /// the values into a new "compacted" log file, updating our latest entries to point to this
+    /// new file so that subsequent reads will be able to find the correct values.
+    ///
+    /// When a tombstone value is found ([`None`]), then the key is removed from the keydir. This
+    /// is done implicitly by not writing the key into the new file.
     fn compact(&mut self, inactive_files: Vec<PathBuf>) -> Result<()> {
-        if inactive_files.len() == 0 {
-            return Ok(());
-        }
-
-        println!("Compacting inactive files: {:?}", inactive_files);
+        // Using the current active file name with a compacted suffix to ensure uniqueness.
         let compacted_filename = format!("{}-compacted", self.active_log_file.display());
-        println!("Compacted filename: {:?}", compacted_filename);
 
         let mut compaction_file = std::fs::OpenOptions::new()
             .create(true)
@@ -207,38 +209,43 @@ impl KvStore {
             .open(&compacted_filename)
             .unwrap();
 
-        let mut keydir = self.load_keydir()?;
-
-        for log_file in inactive_files {
-            // Reads entire file into memory, not efficient but good enough for now.
-            let file_data = std::fs::read(&log_file).expect("unable to read log file");
-            for line in file_data.split(|&b| b == b'\n') {
-                if let Ok(log_entry) = bincode::deserialize::<LogEntry>(line) {
-                    if let Some(_) = log_entry.value {
-                        if let Some(keydir_entry) = keydir.get_mut(&log_entry.key) {
-                            // TODO: this is not correct.
-                            if log_entry.timestamp >= keydir_entry.timestamp {
-                                let offset = compaction_file.metadata().unwrap().len();
-                                bincode::serialize_into(&mut compaction_file, &log_entry).unwrap();
-                                writeln!(compaction_file).unwrap();
-                                self.write_keydir(
-                                    compacted_filename.clone().into(),
-                                    log_entry.key,
-                                    offset,
-                                )
-                                .unwrap();
-                            }
-                        }
-                    }
-                }
-            }
-            // Remove old log file after it has been processed.
-            std::fs::remove_file(&log_file).unwrap();
+        let keydir = self.load_keydir()?;
+        for (_, v) in keydir.iter() {
+            let mut file = std::fs::File::open(&v.file_id).expect("unable to read log file");
+            file.seek(SeekFrom::Start(v.offset))
+                .map_err(|e| KvStoreError::IoError {
+                    source: e,
+                    filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+                })?;
+            let log_entry: LogEntry = bincode::deserialize_from(&mut file)?;
+            let offset = compaction_file
+                .metadata()
+                .expect("file exists to check metadata")
+                .len();
+            bincode::serialize_into(&mut compaction_file, &log_entry)
+                .map_err(KvStoreError::BincodeSerialization)?;
+            self.write_keydir(
+                compacted_filename.clone().into(),
+                log_entry.key.clone(),
+                offset,
+            )?;
         }
 
+        // Compaction process is complete, remove the inactive files.
+        // NOTE: this is not entirely safe as the application could halt in the middle
+        // of the above process and lingering files would be left on disk.
+        for log_file in inactive_files {
+            if log_file == self.active_log_file {
+                continue;
+            }
+            std::fs::remove_file(&log_file).unwrap();
+        }
         Ok(())
     }
 
+    /// Append a log into the active log file. This acts as a Write-ahead log (WAL)
+    /// and is an operation which should be taken before other operations, such as
+    /// updating the keydir.
     fn append_to_log(&mut self, entry: &LogEntry) -> Result<u64> {
         let mut log_file = std::fs::OpenOptions::new()
             .read(true)
@@ -261,6 +268,7 @@ impl KvStore {
             .len();
 
         // Create a new log file when our file size is too large.
+        // This will be used for compaction later.
         if offset > self.max_log_file_size {
             log_file = self.create_log_file()?;
             offset = 0;
@@ -305,6 +313,10 @@ impl KvStore {
         Ok(keydir)
     }
 
+    /// Write a value into the keydir, this updates an entry within the mapping for where the
+    /// key is stored in the passed log file.
+    ///
+    /// Typically, this is done right after a value is written into the WAL.
     fn write_keydir(&mut self, file_id: PathBuf, key: String, offset: u64) -> Result<()> {
         let keydir_file = std::fs::OpenOptions::new()
             .write(true)
@@ -315,13 +327,13 @@ impl KvStore {
                 filename: self.keydir_location.display().to_string(),
             })?;
 
-        let mut keydir = self.load_keydir()?;
         let entry = KeydirEntry {
             file_id,
             offset,
             size: key.len(),
             timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
         };
+        let mut keydir = self.load_keydir()?;
         keydir.insert(key, entry);
 
         bincode::serialize_into(&keydir_file, &keydir)
