@@ -1,15 +1,15 @@
+use glob::glob;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::io::{prelude::*, SeekFrom};
-use std::{
-    collections::HashMap,
-    io::{BufRead, BufReader, Write},
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, path::PathBuf};
 use thiserror::Error;
 
 pub const LOG_PREFIX: &str = "kvs.log";
 pub const KEYDIR_NAME: &str = "kvs-keydir";
+
+// Smaller sizes for forcing compaction in tests.
+const MAX_LOG_FILE_SIZE: u64 = 1024; // 1 MiB
+const MAX_NUM_LOG_FILES: usize = 5;
 
 pub type Result<T> = std::result::Result<T, KvStoreError>;
 
@@ -30,10 +30,7 @@ pub enum KvStoreError {
     #[error("Tried compacting the active file")]
     ActiveFileCompaction,
 
-    #[error("Unable to serialize entry: {0}")]
-    SerializeError(#[from] serde_json::Error),
-
-    #[error("Unable to serialize keydir: {0}")]
+    #[error("Unable to serialize: {0}")]
     BincodeSerialization(#[from] bincode::Error),
 }
 
@@ -44,7 +41,7 @@ pub enum Operation {
     Remove,
 }
 
-/// An in-memory key-value store, backed by a [`HashMap`] from the standard library.
+/// An in-memory key-value store, backed by a [`BTreeMap`] from the standard library.
 #[derive(Debug)]
 pub struct KvStore {
     pub log_location: PathBuf,
@@ -53,17 +50,15 @@ pub struct KvStore {
     /// The byte offset is used to seek to the correct position in the log file.
     keydir_location: PathBuf,
 
-    /// Keydir is an in-memory hashmap of keys to their respective log file, which
-    /// contains the offset to the entry in the file.
-    keydir: HashMap<String, KeydirEntry>,
-
     active_log_file: PathBuf,
 
-    /// Multiple log files are used to store the entries in the store.
+    /// Keydir is an in-memory (traditionally) hashmap of keys to their respective log file, which
+    /// contains the offset to the entry in the file.
     ///
-    /// When a file reaches a certain size, defined by [`max_log_file_size`], a new file is
-    /// created.
-    log_files: VecDeque<LogFile>,
+    /// This would traditionally be in-memory, but as we also have a CLI portion of the
+    /// application, we persist the keydir to disk so that it can be loaded for various
+    /// operations.
+    keydir: BTreeMap<String, KeydirEntry>,
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
@@ -72,27 +67,6 @@ pub struct KvStore {
 
     /// Index used for the log file.
     file_index: usize,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum Phase {
-    Active,
-    Inactive,
-    Compacted,
-}
-
-#[derive(Debug, Clone)]
-struct LogFile {
-    /// Whether the file is active or not.
-    ///
-    /// Once a file is inactive, it will never become active again.
-    ///
-    /// Only inactive files are marked for compaction/merging.
-    phase: Phase,
-
-    /// Name of the file, the full name can be constructed by appending this to the
-    /// [`log location`].
-    name: String,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -119,7 +93,7 @@ struct KeydirEntry {
     offset: u64,
 
     /// The size of the entry in bytes.
-    size: u64,
+    size: usize,
 
     timestamp: i64,
 }
@@ -133,8 +107,7 @@ impl KvStore {
             active_log_file: PathBuf::default(),
             log_location: PathBuf::default(),
             keydir_location: PathBuf::default(),
-            keydir: HashMap::new(),
-            log_files: VecDeque::new(),
+            keydir: BTreeMap::new(),
             max_log_file_size, // TODO: increase
             max_num_log_files,
             file_index: 0,
@@ -146,7 +119,7 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(48000, 3);
+        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
@@ -170,30 +143,12 @@ impl KvStore {
             .read(true)
             .open(&init_name)
             .unwrap();
-        let active_file = LogFile {
-            phase: Phase::Active,
-            name: init_name.clone(),
-        };
 
-        // Active file is always at the back of the queue.
-        self.log_files.push_back(active_file);
         self.active_log_file = PathBuf::from(init_name.clone());
         Ok(log_file)
     }
 
-    /// Set the current active file as inactive.
-    ///
-    /// This is used when a new file is created, the old file is marked as inactive
-    /// and can be compacted at a later time.
-    fn set_current_file_inactive(&mut self) {
-        let (mut current_active_file, idx) = self.get_active_file();
-        current_active_file.phase = Phase::Inactive;
-        self.log_files[idx] = current_active_file;
-    }
-
     fn create_log_file(&mut self) -> Result<std::fs::File> {
-        self.set_current_file_inactive();
-
         let next_log_file_name = self.next_log_file_name();
         let log_file = std::fs::OpenOptions::new()
             .create(true)
@@ -205,15 +160,18 @@ impl KvStore {
             })?;
         self.active_log_file = PathBuf::from(next_log_file_name.clone());
 
-        let new_file = LogFile {
-            phase: Phase::Active,
-            name: next_log_file_name,
+        // Do not consider files which satisfy the below criterion as candidates for compaction.
+        let no_compact = |p: &PathBuf| {
+            !p.to_string_lossy().contains("compacted")
+                || !p.to_string_lossy().contains("keydir")
+                || *p != self.active_log_file
         };
 
-        // Active file is always at the back of the queue.
-        self.log_files.push_back(new_file);
-
-        let inactive_files = self.get_inactive_files();
+        let inactive_files = glob(&format!("{}/kvs.log*", self.log_location.display()))
+            .unwrap()
+            .map(|p| p.unwrap())
+            .filter(no_compact)
+            .collect::<Vec<_>>();
         if inactive_files.len() > self.max_num_log_files {
             self.compact(inactive_files)?;
         }
@@ -233,111 +191,71 @@ impl KvStore {
         self.file_index += 1;
     }
 
-    /// Retrieve the active file and its index, since this is always at the back of the
-    /// queue we know it is the last index.
-    fn get_active_file(&self) -> (LogFile, usize) {
-        (
-            self.log_files
-                .back()
-                .expect("No active file found")
-                .to_owned(),
-            self.log_files.len() - 1,
-        )
-    }
+    /// Perform compaction on the inactive log files.
+    ///
+    /// This works by reading the keydir (where our most recent values are stored) and then placing
+    /// the values into a new "compacted" log file, updating our latest entries to point to this
+    /// new file so that subsequent reads will be able to find the correct values.
+    ///
+    /// When a tombstone value is found ([`None`]), then the key is removed from the keydir. This
+    /// is done implicitly by not writing the key into the new file.
+    fn compact(&mut self, inactive_files: Vec<PathBuf>) -> Result<()> {
+        // Using the current active file name with a compacted suffix to ensure uniqueness.
+        let compacted_filename = format!("{}-compacted", self.active_log_file.display());
 
-    fn open_active_log_file(&mut self) -> Result<std::fs::File> {
-        if std::path::Path::exists(self.active_log_file.as_path()) {
-            // Open the file if it exists.
-            Ok(std::fs::OpenOptions::new()
-                .read(true)
-                .create(true)
-                .append(true)
-                .open(&self.active_log_file.as_path())
+        let mut compaction_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&compacted_filename)
+            .unwrap();
+
+        let keydir = self.load_keydir()?;
+        for (_, v) in keydir.iter() {
+            let mut file = std::fs::File::open(&v.file_id).expect("unable to read log file");
+            file.seek(SeekFrom::Start(v.offset))
                 .map_err(|e| KvStoreError::IoError {
                     source: e,
                     filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                })?)
-        } else {
-            // File needs to be created.
-            Ok(self.create_log_file()?)
+                })?;
+            let log_entry: LogEntry = bincode::deserialize_from(&mut file)?;
+            let offset = compaction_file
+                .metadata()
+                .expect("file exists to check metadata")
+                .len();
+            bincode::serialize_into(&mut compaction_file, &log_entry)
+                .map_err(KvStoreError::BincodeSerialization)?;
+            self.write_keydir(
+                compacted_filename.clone().into(),
+                log_entry.key.clone(),
+                offset,
+            )?;
         }
-    }
 
-    fn get_inactive_files(&mut self) -> Vec<LogFile> {
-        let mut inactive_files = Vec::new();
-
-        self.log_files.clone().iter_mut().for_each(|file| {
-            if file.phase == Phase::Active || file.phase == Phase::Compacted {
-                return;
-            }
-            inactive_files.push(file.to_owned());
-        });
-
-        inactive_files
-    }
-
-    /// Perform compaction on the inactive log files.
-    fn compact(&mut self, inactive_files: Vec<LogFile>) -> Result<()> {
-        println!("Inactive files: {:?}", inactive_files);
-        if inactive_files.len() == 0 {
-            return Ok(());
-        }
-        self.log_files
-            .make_contiguous()
-            .sort_by_key(|file| file.name.clone());
-        println!("Files: {:?}", self.log_files);
-
-        let compacted_filename = format!("{}-compacted", self.active_log_file.display());
-        println!("Compacted filename: {:?}", compacted_filename);
-
-        let mut compaction_file = std::fs::File::create(&compacted_filename).unwrap();
+        // Compaction process is complete, remove the inactive files.
+        // NOTE: this is not entirely safe as the application could halt in the middle
+        // of the above process and lingering files would be left on disk.
         for log_file in inactive_files {
-            if log_file.phase == Phase::Active {
-                return Err(KvStoreError::ActiveFileCompaction);
+            if log_file == self.active_log_file {
+                continue;
             }
-
-            println!("Compacting file: {:?}", log_file);
-            for (_key, ref mut keydir_entry) in self.keydir.iter_mut() {
-                let file = std::fs::File::open(&keydir_entry.file_id).unwrap();
-                let mut buf = BufReader::new(file);
-                buf.seek(SeekFrom::Start(keydir_entry.offset)).unwrap();
-                let mut v = Vec::new();
-                buf.read_until(b'\n', &mut v).unwrap();
-                let log_entry: LogEntry = serde_json::from_slice(&v).unwrap();
-                serde_json::to_writer(&mut compaction_file, &log_entry).unwrap();
-                writeln!(compaction_file).unwrap();
-                keydir_entry.file_id = PathBuf::from(compacted_filename.clone());
-                keydir_entry.offset = compaction_file
-                    .metadata()
-                    .unwrap()
-                    .len()
-                    .try_into()
-                    .unwrap();
-            }
-
-            println!("Removing file: {:?}", log_file.name);
-            std::fs::remove_file(&log_file.name).unwrap();
-            let idx = self
-                .log_files
-                .binary_search_by_key(&log_file.name, |file| file.name.clone())
-                .unwrap();
-            println!("Removing file from log_files: {:?}", self.log_files[idx]);
-            self.log_files.remove(idx);
+            std::fs::remove_file(&log_file).unwrap();
         }
-
-        println!("Pushing compacted file: {:?}", compacted_filename);
-        self.log_files.push_front(LogFile {
-            phase: Phase::Compacted,
-            name: compacted_filename,
-        });
-
-        println!("{:?}", self.log_files);
-
         Ok(())
     }
 
+    /// Append a log into the active log file. This acts as a Write-ahead log (WAL)
+    /// and is an operation which should be taken before other operations, such as
+    /// updating the keydir.
     fn append_to_log(&mut self, entry: &LogEntry) -> Result<u64> {
-        let mut log_file = self.open_active_log_file()?;
+        let mut log_file = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.active_log_file.as_path())
+            .map_err(|e| KvStoreError::IoError {
+                source: e,
+                filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+            })?;
 
         // The offset is where the last entry in the log file ends, this is because
         // the log file is an append-only log.
@@ -350,25 +268,21 @@ impl KvStore {
             .len();
 
         // Create a new log file when our file size is too large.
+        // This will be used for compaction later.
         if offset > self.max_log_file_size {
             log_file = self.create_log_file()?;
             offset = 0;
         }
 
-        // TODO: JSON likely isn't the best format for this, but it's easy to work with for now.
-        // Investigate another serialisation format in the future (bincode?).
-        serde_json::to_writer(&mut log_file, &entry).map_err(KvStoreError::SerializeError)?;
-        writeln!(log_file).map_err(|e| KvStoreError::IoError {
-            source: e,
-            filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-        })?;
+        bincode::serialize_into(&mut log_file, &entry)
+            .map_err(KvStoreError::BincodeSerialization)?;
 
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
         Ok(offset)
     }
 
-    fn load_keydir(&mut self) -> Result<HashMap<String, KeydirEntry>> {
+    fn load_keydir(&mut self) -> Result<BTreeMap<String, KeydirEntry>> {
         let keydir_location = self.keydir_location.display().to_string();
         let keydir_file = std::fs::OpenOptions::new()
             .read(true)
@@ -389,15 +303,19 @@ impl KvStore {
             .len();
 
         if keydir_file_size == 0 {
-            return Ok(HashMap::new());
+            return Ok(BTreeMap::new());
         }
 
-        let keydir: HashMap<String, KeydirEntry> =
+        let keydir: BTreeMap<String, KeydirEntry> =
             bincode::deserialize_from(keydir_file).map_err(KvStoreError::BincodeSerialization)?;
         self.keydir = keydir.clone();
         Ok(keydir)
     }
 
+    /// Write a value into the keydir, this updates an entry within the mapping for where the
+    /// key is stored in the passed log file.
+    ///
+    /// Typically, this is done right after a value is written into the WAL.
     fn write_keydir(&mut self, file_id: PathBuf, key: String, offset: u64) -> Result<()> {
         let keydir_file = std::fs::OpenOptions::new()
             .write(true)
@@ -408,16 +326,16 @@ impl KvStore {
                 filename: self.keydir_location.display().to_string(),
             })?;
 
-        let mut keydir = self.load_keydir()?;
         let entry = KeydirEntry {
             file_id,
             offset,
-            size: 0, // TODO: calculate size
-            timestamp: chrono::Utc::now().timestamp(),
+            size: key.len(),
+            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
         };
+        let mut keydir = self.load_keydir()?;
         keydir.insert(key, entry);
 
-        bincode::serialize_into(keydir_file, &keydir)
+        bincode::serialize_into(&keydir_file, &keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
         Ok(())
     }
@@ -425,7 +343,7 @@ impl KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         let entry = LogEntry {
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
             operation: Operation::Set,
             key_size: key.len(),
             key,
@@ -441,16 +359,27 @@ impl KvStore {
     /// Retrieve the value of a key from the store.
     /// If the key does not exist, then [`None`] is returned.
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
+        // We load the keydir from disk here because we have a CLI aspect to the application
+        // which means that the keydir is not always in memory, loading it from disk gets around
+        // that.
         let keydir = self.load_keydir()?;
         match keydir.get(&key) {
             Some(entry) => {
-                let log_file = self.open_active_log_file()?;
+                let mut log_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .create(true)
+                    .open(entry.file_id.as_path())
+                    .map_err(|e| KvStoreError::IoError {
+                        source: e,
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
+                    })?;
 
                 let log_file_size = log_file
                     .metadata()
                     .map_err(|e| KvStoreError::IoError {
                         source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
                     })?
                     .len();
 
@@ -459,24 +388,18 @@ impl KvStore {
                     return Ok(None);
                 }
 
-                let mut buf = BufReader::new(log_file);
-
                 // Seek to the position provided by the keydir and serialize the entry.
-                let mut v = Vec::new();
-                buf.seek(SeekFrom::Start(entry.offset))
-                    .map_err(|e| KvStoreError::IoError {
+                log_file.seek(SeekFrom::Start(entry.offset)).map_err(|e| {
+                    KvStoreError::IoError {
                         source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                    })?;
-                buf.read_until(b'\n', &mut v)
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-                    })?;
-                let entry: LogEntry = serde_json::from_slice(&v)?;
-                match entry.value {
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
+                    }
+                })?;
+                let log_entry: LogEntry = bincode::deserialize_from(log_file)?;
+                match log_entry.value {
                     Some(value) => Ok(Some(value)),
-                    // TODO: this is a tombstone value.
+                    // This is a tombstone value and equates to a deleted key and
+                    // the "Key not found" scenario.
                     None => Ok(None),
                 }
             }
@@ -491,7 +414,7 @@ impl KvStore {
         match keydir.get(&key) {
             Some(_offset) => {
                 let entry = LogEntry {
-                    timestamp: chrono::Utc::now().timestamp(),
+                    timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
                     operation: Operation::Remove,
                     key_size: key.len(),
                     key,
