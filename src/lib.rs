@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{prelude::*, SeekFrom};
 use std::{collections::BTreeMap, path::PathBuf};
 use thiserror::Error;
+use tracing::{self, debug, info};
 
 pub const LOG_PREFIX: &str = "kvs.log";
 pub const KEYDIR_NAME: &str = "kvs-keydir";
@@ -32,6 +33,9 @@ pub enum KvStoreError {
 
     #[error("Unable to serialize: {0}")]
     BincodeSerialization(#[from] bincode::Error),
+
+    #[error("Unable to setup tracing: {0}")]
+    TracingError(#[from] tracing::subscriber::SetGlobalDefaultError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +71,8 @@ pub struct KvStore {
 
     /// Index used for the log file.
     file_index: usize,
+
+    tracing: tracing::subscriber::DefaultGuard,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -102,7 +108,11 @@ impl KvStore {
     /// Create a new KvStore.
     ///
     /// The store is created in memory and is not persisted to disk.
-    fn new(max_log_file_size: u64, max_num_log_files: usize) -> KvStore {
+    fn new(
+        max_log_file_size: u64,
+        max_num_log_files: usize,
+        tracing_guard: tracing::subscriber::DefaultGuard,
+    ) -> KvStore {
         KvStore {
             active_log_file: PathBuf::default(),
             log_location: PathBuf::default(),
@@ -111,6 +121,7 @@ impl KvStore {
             max_log_file_size, // TODO: increase
             max_num_log_files,
             file_index: 0,
+            tracing: tracing_guard,
         }
     }
 
@@ -119,14 +130,18 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES);
+        let subscriber = tracing_subscriber::fmt().finish();
+        let tracing_guard = tracing::subscriber::set_default(subscriber);
+        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES, tracing_guard);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
+        debug!("Using keydir at {}", keydir_path.display());
 
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
 
+        debug!("Creating initial log file");
         store.initial_log_file()?;
 
         Ok(store)
@@ -145,6 +160,7 @@ impl KvStore {
             .unwrap();
 
         self.active_log_file = PathBuf::from(init_name.clone());
+        debug!("Created initial log file at {}", init_name);
         Ok(log_file)
     }
 
@@ -164,7 +180,7 @@ impl KvStore {
         let no_compact = |p: &PathBuf| {
             !p.to_string_lossy().contains("compacted")
                 || !p.to_string_lossy().contains("keydir")
-                || *p != self.active_log_file
+                || *p != self.active_log_file // TODO: this doesn't quite work right
         };
 
         let inactive_files = glob(&format!("{}/kvs.log*", self.log_location.display()))
@@ -173,6 +189,11 @@ impl KvStore {
             .filter(no_compact)
             .collect::<Vec<_>>();
         if inactive_files.len() > self.max_num_log_files {
+            info!(
+                "Compaction required, {inactive_count} inactive files > {max_num_log_files} max allowed: {inactive_files:?}",
+                inactive_count = inactive_files.len(),
+                max_num_log_files = self.max_num_log_files,
+            );
             self.compact(inactive_files)?;
         }
         Ok(log_file)
@@ -202,6 +223,11 @@ impl KvStore {
     fn compact(&mut self, inactive_files: Vec<PathBuf>) -> Result<()> {
         // Using the current active file name with a compacted suffix to ensure uniqueness.
         let compacted_filename = format!("{}-compacted", self.active_log_file.display());
+        debug!(
+            "Compacting to {}, active file is {}",
+            compacted_filename,
+            self.active_log_file.display()
+        );
 
         let mut compaction_file = std::fs::OpenOptions::new()
             .create(true)
@@ -230,15 +256,18 @@ impl KvStore {
                 offset,
             )?;
         }
+        info!("Compaction complete, latest entries are available in {compacted_filename}");
 
         // Compaction process is complete, remove the inactive files.
         // NOTE: this is not entirely safe as the application could halt in the middle
         // of the above process and lingering files would be left on disk.
         for log_file in inactive_files {
+            // TODO: this shouldn't be required as we filter out the active file above.
             if log_file == self.active_log_file {
                 continue;
             }
             std::fs::remove_file(&log_file).unwrap();
+            info!("Removed inactive log file {}", log_file.display());
         }
         Ok(())
     }
@@ -270,6 +299,10 @@ impl KvStore {
         // Create a new log file when our file size is too large.
         // This will be used for compaction later.
         if offset > self.max_log_file_size {
+            debug!(
+                "Log file size exceeded threshold ({}), creating new log file",
+                self.max_log_file_size
+            );
             log_file = self.create_log_file()?;
             offset = 0;
         }
