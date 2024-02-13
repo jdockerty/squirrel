@@ -2,6 +2,7 @@ use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use kvs::Result;
+use kvs::store::KvStore;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -35,7 +36,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = App::parse();
 
-    let mut kv = kvs::KvStore::open(cli.log_file)?;
+    let mut kv = KvStore::open(cli.log_file)?;
 
     match cli.subcmd {
         Some(Commands::Set { key, value }) => {
