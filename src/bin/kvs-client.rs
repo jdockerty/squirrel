@@ -1,8 +1,8 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Parser, Subcommand};
+use kvs::KvStore;
 use kvs::Result;
-use kvs::store::KvStore;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]

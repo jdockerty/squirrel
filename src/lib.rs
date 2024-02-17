@@ -1,6 +1,8 @@
 use thiserror::Error;
-pub mod engine;
-pub mod store;
+mod engine;
+mod store;
+pub use engine::KvsEngine;
+pub use store::KvStore;
 
 pub const LOG_PREFIX: &str = "kvs.log";
 pub const KEYDIR_NAME: &str = "kvs-keydir";
@@ -34,4 +36,3 @@ pub enum KvStoreError {
     #[error("Unable to setup tracing: {0}")]
     TracingError(#[from] tracing::subscriber::SetGlobalDefaultError),
 }
-

@@ -1,14 +1,13 @@
-use clap::{Parser, };
+use clap::Parser;
 use std::net::{SocketAddr, TcpListener};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct App {
-
     #[clap(short, long, default_value = "127.0.0.1:4000")]
     addr: SocketAddr,
 
-    #[clap(short, long, default_value = "kvs")]
+    #[clap(name = "engine", short, long, default_value = "kvs")]
     engine_name: Engine,
 }
 
