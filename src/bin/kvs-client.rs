@@ -1,63 +1,39 @@
-use std::{ffi::OsString, path::PathBuf};
-
-use clap::{Parser, Subcommand};
-use kvs::KvStore;
-use kvs::Result;
+use clap::Parser;
+use kvs::client::Action;
+use std::{io::prelude::*, net::TcpStream};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct App {
-    #[arg(short, long, global = true, default_value = default_log_location())]
-    log_file: PathBuf,
+    #[clap(short, long, default_value = "localhost:4000")]
+    server: String,
 
     #[clap(subcommand)]
-    subcmd: Option<Commands>,
+    subcmd: Action,
 }
 
-fn default_log_location() -> OsString {
-    std::env::current_dir()
-        .expect("unable to find current directory")
-        .into_os_string()
-}
-
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Enter a key-value pair into the store.
-    Set { key: String, value: String },
-
-    /// Get a value from the store, providing a key.
-    Get { key: String },
-
-    /// Remove a value from the store, providing a key.
-    #[clap(name = "rm")]
-    Remove { key: String },
-}
-
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = App::parse();
-
-    let mut kv = KvStore::open(cli.log_file)?;
+    let mut response = String::from("");
 
     match cli.subcmd {
-        Some(Commands::Set { key, value }) => {
-            kv.set(key, value)?;
+        Action::Set { key, value } => {
+            let mut stream = TcpStream::connect(cli.server)?;
+            bincode::serialize_into(&mut stream, &Action::Set { key, value })?;
+            stream.read_to_string(&mut response)?;
+            println!("{}", response);
         }
-        Some(Commands::Get { key }) => match kv.get(key)? {
-            Some(v) => {
-                println!("{}", v);
-            }
-            None => {
-                println!("Key not found");
-            }
-        },
-        Some(Commands::Remove { key }) => {
-            if let Err(kvs::KvStoreError::RemoveOperationWithNoKey) = kv.remove(key) {
-                println!("Key not found");
-                std::process::exit(1);
-            }
+        Action::Get { key } => {
+            let mut stream = TcpStream::connect(cli.server)?;
+            bincode::serialize_into(&mut stream, &Action::Get { key })?;
+            stream.read_to_string(&mut response)?;
+            println!("{}", response);
         }
-        None => {
-            std::process::exit(1);
+        Action::Remove { key } => {
+            let mut stream = TcpStream::connect(cli.server)?;
+            bincode::serialize_into(&mut stream, &Action::Remove { key })?;
+            stream.read_to_string(&mut response)?;
+            println!("{}", response);
         }
     }
 
