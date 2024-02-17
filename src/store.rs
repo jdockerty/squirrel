@@ -1,5 +1,4 @@
-use crate::KvStoreError;
-use crate::Result;
+use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES};
 use glob::glob;
 use serde::{Deserialize, Serialize};
@@ -40,7 +39,7 @@ pub struct KvStore {
     /// Index used for the log file.
     file_index: usize,
 
-    tracing: tracing::subscriber::DefaultGuard,
+    _tracing: tracing::subscriber::DefaultGuard,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -89,7 +88,7 @@ impl KvStore {
             max_log_file_size, // TODO: increase
             max_num_log_files,
             file_index: 0,
-            tracing: tracing_guard,
+            _tracing: tracing_guard,
         }
     }
 
