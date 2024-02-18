@@ -92,8 +92,7 @@ impl KvsEngine for KvStore {
         // We load the keydir from disk here because we have a CLI aspect to the application
         // which means that the keydir is not always in memory, loading it from disk gets around
         // that.
-        let keydir = self.load_keydir()?;
-        match keydir.get(&key) {
+        match self.keydir.get(&key) {
             Some(entry) => {
                 let mut log_file = std::fs::OpenOptions::new()
                     .read(true)
@@ -139,9 +138,7 @@ impl KvsEngine for KvStore {
 
     /// Remove a key from the store.
     fn remove(&mut self, key: String) -> Result<()> {
-        let keydir = self.load_keydir()?;
-
-        match keydir.get(&key) {
+        match self.keydir.get(&key) {
             Some(_offset) => {
                 let entry = LogEntry {
                     timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
@@ -198,6 +195,7 @@ impl KvStore {
 
         debug!("Creating initial log file");
         store.create_log_file()?;
+        store.load_keydir()?;
 
         Ok(store)
     }
@@ -398,10 +396,9 @@ impl KvStore {
             size: key.len(),
             timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
         };
-        let mut keydir = self.load_keydir()?;
-        keydir.insert(key, entry);
+        self.keydir.insert(key, entry);
 
-        bincode::serialize_into(&keydir_file, &keydir)
+        bincode::serialize_into(&keydir_file, &self.keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
         Ok(())
     }
