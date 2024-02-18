@@ -1,15 +1,15 @@
 use clap::Parser;
-use env_logger;
 use kvs::client::Action;
 use kvs::KvStore;
 use kvs::KvsEngine;
-use log::{debug, error, info};
 use std::io::Write;
 use std::{ffi::OsString, path::PathBuf};
 use std::{
     fmt::Display,
     net::{SocketAddr, TcpListener},
 };
+use tracing::{debug, error, info};
+use tracing_subscriber::prelude::*;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -21,7 +21,7 @@ struct App {
     engine_name: Engine,
 
     #[clap(long, default_value = "info")]
-    log_level: log::LevelFilter,
+    log_level: tracing_subscriber::filter::LevelFilter,
 
     #[arg(long, global = true, default_value = default_log_location())]
     log_file: PathBuf,
@@ -50,8 +50,13 @@ impl Display for Engine {
 
 fn main() -> anyhow::Result<()> {
     let app = App::parse();
+
     let mut kv = KvStore::open(app.log_file)?;
-    env_logger::builder().filter_level(app.log_level).init();
+    let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let subscriber = tracing_subscriber::registry()
+        .with(app.log_level)
+        .with(layer);
+    let _tracing_guard = tracing::subscriber::set_default(subscriber);
 
     info!(
         "kvs-server version: {}, engine: {}",
