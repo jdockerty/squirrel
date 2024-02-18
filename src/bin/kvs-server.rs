@@ -87,6 +87,10 @@ fn main() -> anyhow::Result<()> {
             },
             Action::Remove { key } => match kv.remove(key.to_string()) {
                 Ok(_) => debug!("{key} removed"),
+                Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
+                    debug!("{key} not found");
+                    write!(stream, "Key not found")?;
+                }
                 Err(e) => error!("{}", e),
             },
         }

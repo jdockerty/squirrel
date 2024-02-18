@@ -30,6 +30,14 @@ fn main() -> anyhow::Result<()> {
         Action::Remove { key } => {
             let mut stream = TcpStream::connect(cli.server)?;
             bincode::serialize_into(&mut stream, &Action::Remove { key })?;
+            stream.read_to_string(&mut response)?;
+            match response.as_str() {
+                "Key not found" => {
+                    eprint!("{}", response);
+                    std::process::exit(1);
+                }
+                _ => {}
+            }
         }
     }
 
