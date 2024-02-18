@@ -300,7 +300,7 @@ impl KvStore {
                 continue;
             }
             std::fs::remove_file(&log_file).unwrap();
-            info!("Removed inactive log file {}", log_file.display());
+            debug!("Removed inactive log file {}", log_file.display());
         }
         Ok(())
     }
