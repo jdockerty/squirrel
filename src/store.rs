@@ -37,9 +37,6 @@ pub struct KvStore {
     /// The maximum number of log files before older versions are deleted.
     max_num_log_files: usize,
 
-    /// Index used for the log file.
-    file_index: usize,
-
     _tracing: tracing::subscriber::DefaultGuard,
 }
 
@@ -179,7 +176,6 @@ impl KvStore {
             keydir: BTreeMap::new(),
             max_log_file_size, // TODO: increase
             max_num_log_files,
-            file_index: 0,
             _tracing: tracing_guard,
         }
     }
@@ -201,26 +197,9 @@ impl KvStore {
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.initial_log_file()?;
+        store.create_log_file()?;
 
         Ok(store)
-    }
-
-    fn initial_log_file(&mut self) -> Result<std::fs::File> {
-        let init_name = format!("{}0", self.log_location.join(LOG_PREFIX).display());
-        // We do not use File::create here as it would be called on every time open is
-        // used, which happens in the CLI and would cause the file to be truncated each
-        // time.
-        let log_file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .read(true)
-            .open(&init_name)
-            .unwrap();
-
-        self.active_log_file = PathBuf::from(init_name.clone());
-        debug!("Created initial log file at {}", init_name);
-        Ok(log_file)
     }
 
     fn create_log_file(&mut self) -> Result<std::fs::File> {
@@ -259,16 +238,11 @@ impl KvStore {
     }
 
     fn next_log_file_name(&mut self) -> String {
-        self.increment_file_index();
-        format!(
-            "{}{}",
-            self.log_location.join(LOG_PREFIX).display(),
-            self.file_index
-        )
-    }
-
-    fn increment_file_index(&mut self) {
-        self.file_index += 1;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        format!("{}{}", self.log_location.join(LOG_PREFIX).display(), now)
     }
 
     /// Perform compaction on the inactive log files.
