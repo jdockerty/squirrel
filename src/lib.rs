@@ -8,6 +8,7 @@ pub use store::KvStore;
 
 pub const LOG_PREFIX: &str = "kvs.log";
 pub const KEYDIR_NAME: &str = "kvs-keydir";
+pub const ENGINE_FILE: &str = ".engine";
 
 // Smaller sizes for forcing compaction in tests.
 const MAX_LOG_FILE_SIZE: u64 = 1024; // 1 MiB

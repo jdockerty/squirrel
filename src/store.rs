@@ -200,33 +200,10 @@ impl KvStore {
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
 
-        store.engine_is_kvs("kvs".to_string(), store.log_location.join("engine"))?;
-
         debug!("Creating initial log file");
         store.initial_log_file()?;
 
         Ok(store)
-    }
-
-    /// Detect the engine used to create the store.
-    /// We must return an error if previously opened with another engine, as they are incompatible.
-    fn engine_is_kvs(&self, current_engine: String, engine_path: PathBuf) -> crate::Result<()> {
-        if engine_path.exists() {
-            let engine_type = std::fs::read_to_string(engine_path)
-                .unwrap()
-                .trim()
-                .to_string();
-
-            if engine_type != current_engine {
-                return Err(KvStoreError::IncorrectEngine {
-                    current: current_engine,
-                    previous: engine_type,
-                });
-            }
-        } else {
-            std::fs::write(engine_path, "kvs").unwrap();
-        }
-        Ok(())
     }
 
     fn initial_log_file(&mut self) -> Result<std::fs::File> {
@@ -452,6 +429,27 @@ impl KvStore {
 
         bincode::serialize_into(&keydir_file, &keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
+        Ok(())
+    }
+
+    /// Detect the engine used to create the store.
+    /// We must return an error if previously opened with another engine, as they are incompatible.
+    pub fn engine_is_kvs(current_engine: String, engine_path: PathBuf) -> Result<()> {
+        if engine_path.exists() {
+            let engine_type = std::fs::read_to_string(engine_path)
+                .unwrap()
+                .trim()
+                .to_string();
+
+            if engine_type != current_engine {
+                return Err(KvStoreError::IncorrectEngine {
+                    current: current_engine,
+                    previous: engine_type,
+                });
+            }
+        } else {
+            std::fs::write(engine_path, current_engine).unwrap();
+        }
         Ok(())
     }
 }

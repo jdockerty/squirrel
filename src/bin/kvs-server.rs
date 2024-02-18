@@ -2,6 +2,7 @@ use clap::Parser;
 use kvs::client::Action;
 use kvs::KvStore;
 use kvs::KvsEngine;
+use kvs::ENGINE_FILE;
 use std::io::Write;
 use std::{ffi::OsString, path::PathBuf};
 use std::{
@@ -50,6 +51,9 @@ impl Display for Engine {
 
 fn main() -> anyhow::Result<()> {
     let app = App::parse();
+
+    // We must error if the previous storage engine was not 'kvs' as it is incompatible.
+    KvStore::engine_is_kvs(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
 
     let mut kv = KvStore::open(app.log_file)?;
     let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
