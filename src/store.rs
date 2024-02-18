@@ -200,10 +200,33 @@ impl KvStore {
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
 
+        store.engine_is_kvs("kvs".to_string(), store.log_location.join("engine"))?;
+
         debug!("Creating initial log file");
         store.initial_log_file()?;
 
         Ok(store)
+    }
+
+    /// Detect the engine used to create the store.
+    /// We must return an error if previously opened with another engine, as they are incompatible.
+    fn engine_is_kvs(&self, current_engine: String, engine_path: PathBuf) -> crate::Result<()> {
+        if engine_path.exists() {
+            let engine_type = std::fs::read_to_string(engine_path)
+                .unwrap()
+                .trim()
+                .to_string();
+
+            if engine_type != current_engine {
+                return Err(KvStoreError::IncorrectEngine {
+                    current: current_engine,
+                    previous: engine_type,
+                });
+            }
+        } else {
+            std::fs::write(engine_path, "kvs").unwrap();
+        }
+        Ok(())
     }
 
     fn initial_log_file(&mut self) -> Result<std::fs::File> {
@@ -339,7 +362,7 @@ impl KvStore {
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.active_log_file.as_path())
+            .open(self.active_log_file.as_path())
             .map_err(|e| KvStoreError::IoError {
                 source: e,
                 filename: self.active_log_file.as_path().to_string_lossy().to_string(),

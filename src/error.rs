@@ -15,6 +15,9 @@ pub enum Error {
     #[error("Tried compacting the active file")]
     ActiveFileCompaction,
 
+    #[error("Current engine is {current}, previously opened with '{previous}'")]
+    IncorrectEngine { current: String, previous: String },
+
     #[error("Unable to serialize: {0}")]
     BincodeSerialization(#[from] bincode::Error),
 
