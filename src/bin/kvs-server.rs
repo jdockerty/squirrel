@@ -67,39 +67,28 @@ fn main() -> anyhow::Result<()> {
         // We know the actions that a client can take, so we can encode and decode them
         // to know what action we should take.
         let action: Action = bincode::deserialize_from(&stream)?;
+        debug!("Received action: {action:?}");
 
         match &action {
-            Action::Set { key, value } => {
-                debug!("Received action: {action:?}");
-                match kv.set(key.to_string(), value.to_string()) {
-                    Ok(_) => write!(stream, "OK")?,
-                    Err(e) => error!("{}", e),
+            Action::Set { key, value } => match kv.set(key.to_string(), value.to_string()) {
+                Ok(_) => debug!("{key} set to {value}"),
+                Err(e) => error!("{}", e),
+            },
+            Action::Get { key } => match kv.get(key.to_string()) {
+                Ok(Some(value)) => {
+                    debug!("{key} has value: {value}");
+                    write!(stream, "{}", value)?;
                 }
-            }
-            Action::Get { key } => {
-                debug!("Received action: {action:?}");
-                match kv.get(key.to_string()) {
-                    Ok(Some(value)) => {
-                        debug!("{key} has value: {value}");
-                        bincode::serialize_into(stream, &value)?;
-                    }
-                    Ok(None) => {
-                        debug!("{key} not found");
-                        write!(stream, "Key not found")?;
-                    }
-                    Err(e) => error!("{}", e),
+                Ok(None) => {
+                    debug!("{key} not found");
+                    write!(stream, "Key not found")?;
                 }
-            }
-            Action::Remove { key } => {
-                debug!("Received action: {action:?}");
-                match kv.remove(key.to_string()) {
-                    Ok(_) => {
-                        debug!("{key} removed");
-                        write!(stream, "OK")?;
-                    }
-                    Err(e) => error!("{}", e),
-                }
-            }
+                Err(e) => error!("{}", e),
+            },
+            Action::Remove { key } => match kv.remove(key.to_string()) {
+                Ok(_) => debug!("{key} removed"),
+                Err(e) => error!("{}", e),
+            },
         }
     }
 
