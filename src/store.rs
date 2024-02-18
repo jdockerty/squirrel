@@ -1,3 +1,4 @@
+use crate::engine::KvsEngine;
 use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES};
 use glob::glob;
@@ -69,6 +70,97 @@ struct KeydirEntry {
     size: usize,
 
     timestamp: i64,
+}
+
+impl KvsEngine for KvStore {
+    /// Set the value of a key by inserting the value into the store for the given key.
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        let entry = LogEntry {
+            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+            operation: Operation::Set,
+            key_size: key.len(),
+            key,
+            value_size: value.len(),
+            value: Some(value),
+        };
+
+        let offset = self.append_to_log(&entry)?;
+        self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
+        Ok(())
+    }
+
+    /// Retrieve the value of a key from the store.
+    /// If the key does not exist, then [`None`] is returned.
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        // We load the keydir from disk here because we have a CLI aspect to the application
+        // which means that the keydir is not always in memory, loading it from disk gets around
+        // that.
+        let keydir = self.load_keydir()?;
+        match keydir.get(&key) {
+            Some(entry) => {
+                let mut log_file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .create(true)
+                    .open(entry.file_id.as_path())
+                    .map_err(|e| KvStoreError::IoError {
+                        source: e,
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
+                    })?;
+
+                let log_file_size = log_file
+                    .metadata()
+                    .map_err(|e| KvStoreError::IoError {
+                        source: e,
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
+                    })?
+                    .len();
+
+                if log_file_size == 0 {
+                    // Edge case for the log file being empty, there is no value to return.
+                    return Ok(None);
+                }
+
+                // Seek to the position provided by the keydir and serialize the entry.
+                log_file.seek(SeekFrom::Start(entry.offset)).map_err(|e| {
+                    KvStoreError::IoError {
+                        source: e,
+                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
+                    }
+                })?;
+                let log_entry: LogEntry = bincode::deserialize_from(log_file)?;
+                match log_entry.value {
+                    Some(value) => Ok(Some(value)),
+                    // This is a tombstone value and equates to a deleted key and
+                    // the "Key not found" scenario.
+                    None => Ok(None),
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Remove a key from the store.
+    fn remove(&mut self, key: String) -> Result<()> {
+        let keydir = self.load_keydir()?;
+
+        match keydir.get(&key) {
+            Some(_offset) => {
+                let entry = LogEntry {
+                    timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+                    operation: Operation::Remove,
+                    key_size: key.len(),
+                    key,
+                    value: None,
+                    value_size: 0,
+                };
+                let offset = self.append_to_log(&entry)?;
+                self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
+                Ok(())
+            }
+            None => Err(KvStoreError::RemoveOperationWithNoKey),
+        }
+    }
 }
 
 impl KvStore {
@@ -338,94 +430,5 @@ impl KvStore {
         bincode::serialize_into(&keydir_file, &keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
         Ok(())
-    }
-
-    /// Set the value of a key by inserting the value into the store for the given key.
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let entry = LogEntry {
-            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
-            operation: Operation::Set,
-            key_size: key.len(),
-            key,
-            value_size: value.len(),
-            value: Some(value),
-        };
-
-        let offset = self.append_to_log(&entry)?;
-        self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
-        Ok(())
-    }
-
-    /// Retrieve the value of a key from the store.
-    /// If the key does not exist, then [`None`] is returned.
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        // We load the keydir from disk here because we have a CLI aspect to the application
-        // which means that the keydir is not always in memory, loading it from disk gets around
-        // that.
-        let keydir = self.load_keydir()?;
-        match keydir.get(&key) {
-            Some(entry) => {
-                let mut log_file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .append(true)
-                    .create(true)
-                    .open(entry.file_id.as_path())
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
-                    })?;
-
-                let log_file_size = log_file
-                    .metadata()
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
-                    })?
-                    .len();
-
-                if log_file_size == 0 {
-                    // Edge case for the log file being empty, there is no value to return.
-                    return Ok(None);
-                }
-
-                // Seek to the position provided by the keydir and serialize the entry.
-                log_file.seek(SeekFrom::Start(entry.offset)).map_err(|e| {
-                    KvStoreError::IoError {
-                        source: e,
-                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
-                    }
-                })?;
-                let log_entry: LogEntry = bincode::deserialize_from(log_file)?;
-                match log_entry.value {
-                    Some(value) => Ok(Some(value)),
-                    // This is a tombstone value and equates to a deleted key and
-                    // the "Key not found" scenario.
-                    None => Ok(None),
-                }
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Remove a key from the store.
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        let keydir = self.load_keydir()?;
-
-        match keydir.get(&key) {
-            Some(_offset) => {
-                let entry = LogEntry {
-                    timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
-                    operation: Operation::Remove,
-                    key_size: key.len(),
-                    key,
-                    value: None,
-                    value_size: 0,
-                };
-                let offset = self.append_to_log(&entry)?;
-                self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
-                Ok(())
-            }
-            None => Err(KvStoreError::RemoveOperationWithNoKey),
-        }
     }
 }
