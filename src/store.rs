@@ -248,8 +248,9 @@ impl KvStore {
             .open(&compacted_filename)
             .unwrap();
 
-        let keydir = self.load_keydir()?;
-        for (_, v) in keydir.iter() {
+        let mut entries: Vec<(LogEntry, u64)> = Vec::new();
+
+        for (_, v) in self.keydir.iter() {
             let mut file = std::fs::File::open(&v.file_id).expect("unable to read log file");
             file.seek(SeekFrom::Start(v.offset))
                 .map_err(|e| KvStoreError::IoError {
@@ -263,13 +264,13 @@ impl KvStore {
                 .len();
             bincode::serialize_into(&mut compaction_file, &log_entry)
                 .map_err(KvStoreError::BincodeSerialization)?;
-            self.write_keydir(
-                compacted_filename.clone().into(),
-                log_entry.key.clone(),
-                offset,
-            )?;
+            entries.push((log_entry, offset));
         }
-        info!("Compaction complete, latest entries are available in {compacted_filename}");
+
+        for (log_entry, offset) in entries {
+            self.write_keydir(compacted_filename.clone().into(), log_entry.key, offset)?;
+        }
+        debug!("Compaction complete, latest entries are available in {compacted_filename}");
 
         // Compaction process is complete, remove the inactive files.
         // NOTE: this is not entirely safe as the application could halt in the middle
