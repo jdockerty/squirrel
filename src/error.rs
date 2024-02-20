@@ -15,6 +15,12 @@ pub enum Error {
     #[error("Tried compacting the active file")]
     ActiveFileCompaction,
 
+    #[error("No active log file found")]
+    NoActiveLogFile,
+
+    #[error("No keydir set")]
+    NoKeydir,
+
     #[error("Current engine is {current}, previously opened with '{previous}'")]
     IncorrectEngine { current: String, previous: String },
 
