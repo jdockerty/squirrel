@@ -95,42 +95,20 @@ impl KvsEngine for KvStore {
     /// Retrieve the value of a key from the store.
     /// If the key does not exist, then [`None`] is returned.
     fn get(&mut self, key: String) -> Result<Option<String>> {
-        // We load the keydir from disk here because we have a CLI aspect to the application
-        // which means that the keydir is not always in memory, loading it from disk gets around
-        // that.
+        debug!("Getting key {}", key);
+        debug!("Keydir: {:?}", self.keydir);
         match self.keydir.get(&key) {
             Some(entry) => {
-                let mut log_file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .append(true)
-                    .create(true)
-                    .open(entry.file_id.as_path())
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
-                    })?;
+                debug!(
+                    key = key,
+                    offset = entry.offset,
+                    "entry exists in {}",
+                    self.active_log_file.display(),
+                );
 
-                let log_file_size = log_file
-                    .metadata()
-                    .map_err(|e| KvStoreError::IoError {
-                        source: e,
-                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
-                    })?
-                    .len();
-
-                if log_file_size == 0 {
-                    // Edge case for the log file being empty, there is no value to return.
-                    return Ok(None);
-                }
-
-                // Seek to the position provided by the keydir and serialize the entry.
-                log_file.seek(SeekFrom::Start(entry.offset)).map_err(|e| {
-                    KvStoreError::IoError {
-                        source: e,
-                        filename: entry.file_id.as_path().to_string_lossy().to_string(),
-                    }
-                })?;
-                let log_entry: LogEntry = bincode::deserialize_from(log_file)?;
+                let mut entry_file = std::fs::File::open(entry.file_id.clone()).unwrap();
+                entry_file.seek(SeekFrom::Start(entry.offset)).unwrap();
+                let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
                 match log_entry.value {
                     Some(value) => Ok(Some(value)),
                     // This is a tombstone value and equates to a deleted key and
@@ -229,7 +207,7 @@ impl KvStore {
             .filter(no_compact)
             .collect::<Vec<_>>();
         if inactive_files.len() > self.max_num_log_files {
-            info!(
+            debug!(
                 "Compaction required, {inactive_count} inactive files > {max_num_log_files} max allowed: {inactive_files:?}",
                 inactive_count = inactive_files.len(),
                 max_num_log_files = self.max_num_log_files,
