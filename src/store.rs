@@ -217,7 +217,7 @@ impl KvStore {
         Ok(log_file)
     }
 
-    fn next_log_file_name(&mut self) -> String {
+    fn next_log_file_name(&self) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
