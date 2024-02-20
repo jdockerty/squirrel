@@ -123,8 +123,8 @@ impl KvsEngine for KvStore {
     /// Remove a key from the store.
     fn remove(&mut self, key: String) -> Result<()> {
         match self.keydir.get(&key) {
-            Some(_offset) => {
-                let entry = LogEntry {
+            Some(_entry) => {
+                let tombstone = LogEntry {
                     timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
                     operation: Operation::Remove,
                     key_size: key.len(),
@@ -132,8 +132,8 @@ impl KvsEngine for KvStore {
                     value: None,
                     value_size: 0,
                 };
-                let offset = self.append_to_log(&entry)?;
-                self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
+                let offset = self.append_to_log(&tombstone)?;
+                self.write_keydir(self.active_log_file.clone(), tombstone.key.clone(), offset)?;
                 Ok(())
             }
             None => Err(KvStoreError::RemoveOperationWithNoKey),
