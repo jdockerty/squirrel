@@ -3,7 +3,9 @@ use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES};
 use glob::glob;
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
+use std::sync::Arc;
 use std::{collections::BTreeMap, path::PathBuf};
 use tracing::{self, debug, info};
 
@@ -24,6 +26,8 @@ pub struct KvStore {
 
     active_log_file: PathBuf,
 
+    active_log_handle: Option<File>,
+
     /// Keydir is an in-memory (traditionally) hashmap of keys to their respective log file, which
     /// contains the offset to the entry in the file.
     ///
@@ -32,12 +36,14 @@ pub struct KvStore {
     /// operations.
     keydir: BTreeMap<String, KeydirEntry>,
 
+    keydir_handle: Option<Arc<File>>,
+
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
     /// The maximum number of log files before older versions are deleted.
     max_num_log_files: usize,
 
-    _tracing: tracing::subscriber::DefaultGuard,
+    _tracing: Option<tracing::subscriber::DefaultGuard>,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -161,19 +167,17 @@ impl KvStore {
     /// Create a new KvStore.
     ///
     /// The store is created in memory and is not persisted to disk.
-    fn new(
-        max_log_file_size: u64,
-        max_num_log_files: usize,
-        tracing_guard: tracing::subscriber::DefaultGuard,
-    ) -> KvStore {
+    fn new(max_log_file_size: u64, max_num_log_files: usize) -> KvStore {
         KvStore {
             active_log_file: PathBuf::default(),
+            active_log_handle: None,
             log_location: PathBuf::default(),
             keydir_location: PathBuf::default(),
             keydir: BTreeMap::new(),
+            keydir_handle: None,
             max_log_file_size, // TODO: increase
             max_num_log_files,
-            _tracing: tracing_guard,
+            _tracing: None,
         }
     }
 
@@ -182,25 +186,25 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let subscriber = tracing_subscriber::fmt().finish();
-        let tracing_guard = tracing::subscriber::set_default(subscriber);
-        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES, tracing_guard);
+        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
-        debug!("Using keydir at {}", keydir_path.display());
+        info!("Using keydir at {}", keydir_path.display());
 
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.create_log_file()?;
-        store.load_keydir()?;
+        store.active_log_handle = Some(store.create_log_file()?);
+        store.set_keydir_handle()?;
+        store.keydir = store.load_keydir()?;
+        debug!("Loaded keydir: {:?}", store.keydir);
 
         Ok(store)
     }
 
-    fn create_log_file(&mut self) -> Result<std::fs::File> {
+    fn create_log_file(&mut self) -> Result<File> {
         let next_log_file_name = self.next_log_file_name();
         let log_file = std::fs::OpenOptions::new()
             .create(true)
@@ -307,19 +311,12 @@ impl KvStore {
     /// and is an operation which should be taken before other operations, such as
     /// updating the keydir.
     fn append_to_log(&mut self, entry: &LogEntry) -> Result<u64> {
-        let mut log_file = std::fs::OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(self.active_log_file.as_path())
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: self.active_log_file.as_path().to_string_lossy().to_string(),
-            })?;
-
         // The offset is where the last entry in the log file ends, this is because
         // the log file is an append-only log.
-        let mut offset = log_file
+        let mut offset = self
+            .active_log_handle
+            .as_ref()
+            .ok_or(KvStoreError::NoActiveLogFile)?
             .metadata()
             .map_err(|e| KvStoreError::IoError {
                 source: e,
@@ -334,11 +331,11 @@ impl KvStore {
                 "Log file size exceeded threshold ({}), creating new log file",
                 self.max_log_file_size
             );
-            log_file = self.create_log_file()?;
+            self.active_log_handle = Some(self.create_log_file()?);
             offset = 0;
         }
 
-        bincode::serialize_into(&mut log_file, &entry)
+        bincode::serialize_into(&mut self.active_log_handle.as_ref().unwrap(), &entry)
             .map_err(KvStoreError::BincodeSerialization)?;
 
         // Returning the offset of the entry in the log file after it has been written.
@@ -346,8 +343,7 @@ impl KvStore {
         Ok(offset)
     }
 
-    fn load_keydir(&mut self) -> Result<BTreeMap<String, KeydirEntry>> {
-        let keydir_location = self.keydir_location.display().to_string();
+    fn set_keydir_handle(&mut self) -> Result<()> {
         let keydir_file = std::fs::OpenOptions::new()
             .read(true)
             .write(true) // To enable creation in the case where the file doesn't exist.
@@ -355,24 +351,35 @@ impl KvStore {
             .open(self.keydir_location.as_path())
             .map_err(|e| KvStoreError::IoError {
                 source: e,
-                filename: keydir_location.clone(),
+                filename: self.keydir_location.display().to_string().clone(),
             })?;
 
-        let keydir_file_size = keydir_file
+        self.keydir_handle = Some(Arc::new(keydir_file));
+        Ok(())
+    }
+
+    fn load_keydir(&mut self) -> Result<BTreeMap<String, KeydirEntry>> {
+        debug!("Loading keydir");
+        let keydir_file_size = &self
+            .keydir_handle
+            .as_ref()
+            .ok_or(KvStoreError::NoKeydir)?
             .metadata()
             .map_err(|e| KvStoreError::IoError {
                 source: e,
-                filename: keydir_location.clone(),
+                filename: self.keydir_location.display().to_string().clone(),
             })?
             .len();
+        debug!(size = keydir_file_size, "keydir file size");
 
-        if keydir_file_size == 0 {
+        if *keydir_file_size == 0 {
+            info!("New keydir");
             return Ok(BTreeMap::new());
         }
 
         let keydir: BTreeMap<String, KeydirEntry> =
-            bincode::deserialize_from(keydir_file).map_err(KvStoreError::BincodeSerialization)?;
-        self.keydir = keydir.clone();
+            bincode::deserialize_from(self.keydir_handle.as_ref().unwrap().clone())
+                .map_err(KvStoreError::BincodeSerialization)?;
         Ok(keydir)
     }
 
@@ -381,15 +388,7 @@ impl KvStore {
     ///
     /// Typically, this is done right after a value is written into the WAL.
     fn write_keydir(&mut self, file_id: PathBuf, key: String, offset: u64) -> Result<()> {
-        let keydir_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(self.keydir_location.as_path())
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: self.keydir_location.display().to_string(),
-            })?;
-
+        debug!("Writing keydir entry for {key}");
         let entry = KeydirEntry {
             file_id,
             offset,
@@ -397,9 +396,18 @@ impl KvStore {
             timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
         };
         self.keydir.insert(key, entry);
+        debug!("Keydir after insert: {:?}", self.keydir);
 
-        bincode::serialize_into(&keydir_file, &self.keydir)
+        self.keydir_handle
+            .as_mut()
+            .ok_or(KvStoreError::NoKeydir)?
+            .seek(SeekFrom::Start(0))
+            .unwrap();
+
+        bincode::serialize_into(self.keydir_handle.as_mut().unwrap(), &self.keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
+        self.keydir_handle.as_mut().unwrap().flush().unwrap();
+        debug!("Serialized keydir file {}", self.keydir_location.display());
         Ok(())
     }
 
