@@ -410,4 +410,8 @@ impl KvStore {
         }
         Ok(())
     }
+
+    pub fn set_tracing(&mut self, guard: tracing::subscriber::DefaultGuard) {
+        self._tracing = Some(guard);
+    }
 }

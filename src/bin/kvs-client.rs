@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
             bincode::serialize_into(&mut stream, &Action::Remove { key })?;
             stream.read_to_string(&mut response)?;
             if response.as_str() == "Key not found" {
-                eprint!("{}", response);
+                eprintln!("{}", response);
                 std::process::exit(1);
             }
         }

@@ -55,12 +55,13 @@ fn main() -> anyhow::Result<()> {
     // We must error if the previous storage engine was not 'kvs' as it is incompatible.
     KvStore::engine_is_kvs(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
 
-    let mut kv = KvStore::open(app.log_file)?;
     let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
     let subscriber = tracing_subscriber::registry()
         .with(app.log_level)
         .with(layer);
-    let _tracing_guard = tracing::subscriber::set_default(subscriber);
+    let tracing_guard = tracing::subscriber::set_default(subscriber);
+    let mut kv = KvStore::open(app.log_file)?;
+    kv.set_tracing(tracing_guard);
 
     info!(
         "kvs-server version: {}, engine: {}",
