@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
 use std::sync::Arc;
 use std::{collections::BTreeMap, path::PathBuf};
-use tracing::{self, debug, info};
+use tracing::{self, debug};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Operation {
@@ -75,6 +75,20 @@ struct KeydirEntry {
     timestamp: i64,
 }
 
+impl Drop for KvStore {
+    fn drop(&mut self) {
+        // By persisting the keydir to disk on drop, this means that the keydir
+        // is safely stored when the [`KvStore`] drops out of scope.
+        self.keydir_handle
+            .as_mut()
+            .unwrap()
+            .seek(SeekFrom::Start(0))
+            .expect("Seek to start of keydir file");
+        bincode::serialize_into(self.keydir_handle.as_mut().unwrap(), &self.keydir)
+            .expect("Serialize keydir to file");
+    }
+}
+
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     fn set(&mut self, key: String, value: String) -> Result<()> {
@@ -82,13 +96,19 @@ impl KvsEngine for KvStore {
             timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
             operation: Operation::Set,
             key_size: key.len(),
-            key,
+            key: key.clone(),
             value_size: value.len(),
             value: Some(value),
         };
 
         let offset = self.append_to_log(&entry)?;
-        self.write_keydir(self.active_log_file.clone(), entry.key.clone(), offset)?;
+        let entry = KeydirEntry {
+            file_id: self.active_log_file.clone(),
+            offset,
+            size: key.len(),
+            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+        };
+        self.keydir.insert(key.clone(), entry);
         Ok(())
     }
 
@@ -96,7 +116,6 @@ impl KvsEngine for KvStore {
     /// If the key does not exist, then [`None`] is returned.
     fn get(&mut self, key: String) -> Result<Option<String>> {
         debug!("Getting key {}", key);
-        debug!("Keydir: {:?}", self.keydir);
         match self.keydir.get(&key) {
             Some(entry) => {
                 debug!(
@@ -122,18 +141,18 @@ impl KvsEngine for KvStore {
 
     /// Remove a key from the store.
     fn remove(&mut self, key: String) -> Result<()> {
-        match self.keydir.get(&key) {
+        match self.keydir.remove(&key) {
             Some(_entry) => {
                 let tombstone = LogEntry {
                     timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
                     operation: Operation::Remove,
                     key_size: key.len(),
-                    key,
+                    key: key.clone(),
                     value: None,
                     value_size: 0,
                 };
-                let offset = self.append_to_log(&tombstone)?;
-                self.write_keydir(self.active_log_file.clone(), tombstone.key.clone(), offset)?;
+                let _offset = self.append_to_log(&tombstone)?;
+                self.commit_keydir()?;
                 Ok(())
             }
             None => Err(KvStoreError::RemoveOperationWithNoKey),
@@ -168,7 +187,7 @@ impl KvStore {
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
-        info!("Using keydir at {}", keydir_path.display());
+        debug!("Using keydir at {}", keydir_path.display());
 
         store.log_location = path.clone();
         store.keydir_location = keydir_path;
@@ -268,8 +287,15 @@ impl KvStore {
         }
 
         for (log_entry, offset) in entries {
-            self.write_keydir(compacted_filename.clone().into(), log_entry.key, offset)?;
+            let keydir_entry = KeydirEntry {
+                file_id: compacted_filename.clone().into(),
+                offset,
+                size: log_entry.key.len(),
+                timestamp: log_entry.timestamp,
+            };
+            self.keydir.insert(log_entry.key, keydir_entry);
         }
+        self.commit_keydir()?;
         debug!("Compaction complete, latest entries are available in {compacted_filename}");
 
         // Compaction process is complete, remove the inactive files.
@@ -352,7 +378,7 @@ impl KvStore {
         debug!(size = keydir_file_size, "keydir file size");
 
         if *keydir_file_size == 0 {
-            info!("New keydir");
+            debug!("New keydir");
             return Ok(BTreeMap::new());
         }
 
@@ -362,31 +388,21 @@ impl KvStore {
         Ok(keydir)
     }
 
-    /// Write a value into the keydir, this updates an entry within the mapping for where the
-    /// key is stored in the passed log file.
+    /// Commit the keydir to disk to persist its state over crashes of the server.
     ///
-    /// Typically, this is done right after a value is written into the WAL.
-    fn write_keydir(&mut self, file_id: PathBuf, key: String, offset: u64) -> Result<()> {
-        debug!("Writing keydir entry for {key}");
-        let entry = KeydirEntry {
-            file_id,
-            offset,
-            size: key.len(),
-            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
-        };
-        self.keydir.insert(key, entry);
-        debug!("Keydir after insert: {:?}", self.keydir);
-
+    /// This is done by serializing the keydir to disk after important operations.
+    ///
+    /// Note that this is not entirely safe as the application could crash between
+    /// operations.
+    fn commit_keydir(&mut self) -> Result<()> {
         self.keydir_handle
             .as_mut()
             .ok_or(KvStoreError::NoKeydir)?
             .seek(SeekFrom::Start(0))
             .unwrap();
-
         bincode::serialize_into(self.keydir_handle.as_mut().unwrap(), &self.keydir)
             .map_err(KvStoreError::BincodeSerialization)?;
         self.keydir_handle.as_mut().unwrap().flush().unwrap();
-        debug!("Serialized keydir file {}", self.keydir_location.display());
         Ok(())
     }
 
