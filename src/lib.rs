@@ -2,6 +2,7 @@ pub mod client;
 mod engine;
 mod error;
 mod store;
+pub mod thread_pool;
 pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
 pub use store::KvStore;

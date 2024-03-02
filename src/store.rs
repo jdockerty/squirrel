@@ -17,6 +17,7 @@ pub enum Operation {
 }
 
 /// An in-memory key-value store, backed by a [`BTreeMap`] from the standard library.
+#[derive(Clone)]
 pub struct KvStore {
     pub log_location: PathBuf,
 
@@ -26,7 +27,7 @@ pub struct KvStore {
 
     active_log_file: PathBuf,
 
-    active_log_handle: Option<File>,
+    active_log_handle: Option<Arc<File>>,
 
     /// Keydir is an in-memory (traditionally) hashmap of keys to their respective log file, which
     /// contains the offset to the entry in the file.
@@ -43,7 +44,7 @@ pub struct KvStore {
     /// The maximum number of log files before older versions are deleted.
     max_num_log_files: usize,
 
-    _tracing: Option<tracing::subscriber::DefaultGuard>,
+    _tracing: Option<Arc<tracing::subscriber::DefaultGuard>>,
 }
 
 /// A ['LogEntry'] is a single line entry in the log file.
@@ -114,7 +115,7 @@ impl KvsEngine for KvStore {
 
     /// Retrieve the value of a key from the store.
     /// If the key does not exist, then [`None`] is returned.
-    fn get(&mut self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         debug!("Getting key {}", key);
         match self.keydir.get(&key) {
             Some(entry) => {
@@ -193,7 +194,7 @@ impl KvStore {
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.active_log_handle = Some(store.create_log_file()?);
+        store.active_log_handle = Some(Arc::new(store.create_log_file()?));
         store.set_keydir_handle()?;
         store.keydir = store.load_keydir()?;
         debug!("Loaded keydir: {:?}", store.keydir);
@@ -336,11 +337,11 @@ impl KvStore {
                 "Log file size exceeded threshold ({}), creating new log file",
                 self.max_log_file_size
             );
-            self.active_log_handle = Some(self.create_log_file()?);
+            self.active_log_handle = Some(Arc::new(self.create_log_file()?));
             offset = 0;
         }
 
-        bincode::serialize_into(&mut self.active_log_handle.as_ref().unwrap(), &entry)
+        bincode::serialize_into(&mut self.active_log_handle.as_mut().unwrap(), &entry)
             .map_err(KvStoreError::BincodeSerialization)?;
 
         // Returning the offset of the entry in the log file after it has been written.
@@ -428,6 +429,6 @@ impl KvStore {
     }
 
     pub fn set_tracing(&mut self, guard: tracing::subscriber::DefaultGuard) {
-        self._tracing = Some(guard);
+        self._tracing = Some(Arc::new(guard));
     }
 }
