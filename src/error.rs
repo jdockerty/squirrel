@@ -29,4 +29,7 @@ pub enum Error {
 
     #[error("Unable to setup tracing: {0}")]
     TracingError(#[from] tracing::subscriber::SetGlobalDefaultError),
+
+    #[error("An internal error occurred: {0}")]
+    InternalError(#[from] anyhow::Error),
 }

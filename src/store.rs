@@ -1,12 +1,14 @@
 use crate::engine::KvsEngine;
 use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES};
+use dashmap::DashMap;
 use glob::glob;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
-use std::sync::Arc;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use tracing::{self, debug};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -16,7 +18,7 @@ pub enum Operation {
     Remove,
 }
 
-/// An in-memory key-value store, backed by a [`BTreeMap`] from the standard library.
+/// An in-memory key-value store inspired by Bitcask.
 #[derive(Clone)]
 pub struct KvStore {
     pub log_location: PathBuf,
@@ -27,17 +29,15 @@ pub struct KvStore {
 
     active_log_file: PathBuf,
 
-    active_log_handle: Option<Arc<File>>,
+    active_log_handle: Option<Arc<RwLock<File>>>,
 
-    /// Keydir is an in-memory (traditionally) hashmap of keys to their respective log file, which
-    /// contains the offset to the entry in the file.
+    /// Keydir is an in-memory map of keys to their respective log file, which
+    /// contains the offset to the entry in the log file.
     ///
-    /// This would traditionally be in-memory, but as we also have a CLI portion of the
-    /// application, we persist the keydir to disk so that it can be loaded for various
-    /// operations.
-    keydir: BTreeMap<String, KeydirEntry>,
+    /// This uses [`DashMap`] to allow for concurrent reads and writes.
+    keydir: DashMap<String, KeydirEntry>,
 
-    keydir_handle: Option<Arc<File>>,
+    keydir_handle: Option<Arc<RwLock<File>>>,
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
@@ -80,19 +80,14 @@ impl Drop for KvStore {
     fn drop(&mut self) {
         // By persisting the keydir to disk on drop, this means that the keydir
         // is safely stored when the [`KvStore`] drops out of scope.
-        self.keydir_handle
-            .as_mut()
-            .unwrap()
-            .seek(SeekFrom::Start(0))
-            .expect("Seek to start of keydir file");
-        bincode::serialize_into(self.keydir_handle.as_mut().unwrap(), &self.keydir)
-            .expect("Serialize keydir to file");
+        self.commit_keydir()
+            .expect("Unable to commit keydir to disk");
     }
 }
 
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
-    fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&self, key: String, value: String) -> Result<()> {
         let entry = LogEntry {
             timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
             operation: Operation::Set,
@@ -102,7 +97,9 @@ impl KvsEngine for KvStore {
             value: Some(value),
         };
 
-        let offset = self.append_to_log(&entry)?;
+        // Interior mutability pattern to allow for mutation of the store.
+        let s = RefCell::new(self.clone());
+        let offset = s.borrow_mut().append_to_log(&entry)?;
         let entry = KeydirEntry {
             file_id: self.active_log_file.clone(),
             offset,
@@ -141,7 +138,7 @@ impl KvsEngine for KvStore {
     }
 
     /// Remove a key from the store.
-    fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&self, key: String) -> Result<()> {
         match self.keydir.remove(&key) {
             Some(_entry) => {
                 let tombstone = LogEntry {
@@ -152,7 +149,9 @@ impl KvsEngine for KvStore {
                     value: None,
                     value_size: 0,
                 };
-                let _offset = self.append_to_log(&tombstone)?;
+                // Interior mutability pattern to allow for mutation of the store.
+                let s = RefCell::new(self.clone());
+                let _offset = s.borrow_mut().append_to_log(&tombstone)?;
                 self.commit_keydir()?;
                 Ok(())
             }
@@ -171,7 +170,7 @@ impl KvStore {
             active_log_handle: None,
             log_location: PathBuf::default(),
             keydir_location: PathBuf::default(),
-            keydir: BTreeMap::new(),
+            keydir: DashMap::new(),
             keydir_handle: None,
             max_log_file_size, // TODO: increase
             max_num_log_files,
@@ -194,7 +193,7 @@ impl KvStore {
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.active_log_handle = Some(Arc::new(store.create_log_file()?));
+        store.active_log_handle = Some(Arc::new(RwLock::new(store.create_log_file()?)));
         store.set_keydir_handle()?;
         store.keydir = store.load_keydir()?;
         debug!("Loaded keydir: {:?}", store.keydir);
@@ -218,7 +217,7 @@ impl KvStore {
         let no_compact = |p: &PathBuf| {
             !p.to_string_lossy().contains("compacted")
                 || !p.to_string_lossy().contains("keydir")
-                || *p != self.active_log_file // TODO: this doesn't quite work right
+                || *p != *self.active_log_file // TODO: this doesn't quite work right
         };
 
         let inactive_files = glob(&format!("{}/kvs.log*", self.log_location.display()))
@@ -270,9 +269,10 @@ impl KvStore {
 
         let mut entries: Vec<(LogEntry, u64)> = Vec::new();
 
-        for (_, v) in self.keydir.iter() {
-            let mut file = std::fs::File::open(&v.file_id).expect("unable to read log file");
-            file.seek(SeekFrom::Start(v.offset))
+        for entry in self.keydir.iter() {
+            println!("{:?}", entry.value());
+            let mut file = std::fs::File::open(&entry.file_id).expect("unable to read log file");
+            file.seek(SeekFrom::Start(entry.offset))
                 .map_err(|e| KvStoreError::IoError {
                     source: e,
                     filename: self.active_log_file.as_path().to_string_lossy().to_string(),
@@ -304,7 +304,7 @@ impl KvStore {
         // of the above process and lingering files would be left on disk.
         for log_file in inactive_files {
             // TODO: this shouldn't be required as we filter out the active file above.
-            if log_file == self.active_log_file {
+            if log_file == *self.active_log_file {
                 continue;
             }
             std::fs::remove_file(&log_file).unwrap();
@@ -323,6 +323,8 @@ impl KvStore {
             .active_log_handle
             .as_ref()
             .ok_or(KvStoreError::NoActiveLogFile)?
+            .write()
+            .unwrap()
             .metadata()
             .map_err(|e| KvStoreError::IoError {
                 source: e,
@@ -337,12 +339,15 @@ impl KvStore {
                 "Log file size exceeded threshold ({}), creating new log file",
                 self.max_log_file_size
             );
-            self.active_log_handle = Some(Arc::new(self.create_log_file()?));
+            self.active_log_handle = Some(Arc::new(RwLock::new(self.create_log_file()?)));
             offset = 0;
         }
 
-        bincode::serialize_into(&mut self.active_log_handle.as_mut().unwrap(), &entry)
-            .map_err(KvStoreError::BincodeSerialization)?;
+        bincode::serialize_into(
+            &mut *self.active_log_handle.as_ref().unwrap().write().unwrap(),
+            &entry,
+        )
+        .map_err(KvStoreError::BincodeSerialization)?;
 
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
@@ -360,16 +365,18 @@ impl KvStore {
                 filename: self.keydir_location.display().to_string().clone(),
             })?;
 
-        self.keydir_handle = Some(Arc::new(keydir_file));
+        self.keydir_handle = Some(Arc::new(RwLock::new(keydir_file)));
         Ok(())
     }
 
-    fn load_keydir(&mut self) -> Result<BTreeMap<String, KeydirEntry>> {
+    fn load_keydir(&self) -> Result<DashMap<String, KeydirEntry>> {
         debug!("Loading keydir");
-        let keydir_file_size = &self
-            .keydir_handle
-            .as_ref()
+        let handle = self.keydir_handle.clone();
+
+        let keydir_file_size = handle
             .ok_or(KvStoreError::NoKeydir)?
+            .read()
+            .unwrap()
             .metadata()
             .map_err(|e| KvStoreError::IoError {
                 source: e,
@@ -378,13 +385,13 @@ impl KvStore {
             .len();
         debug!(size = keydir_file_size, "keydir file size");
 
-        if *keydir_file_size == 0 {
+        if keydir_file_size == 0 {
             debug!("New keydir");
-            return Ok(BTreeMap::new());
+            return Ok(DashMap::new());
         }
 
-        let keydir: BTreeMap<String, KeydirEntry> =
-            bincode::deserialize_from(self.keydir_handle.as_ref().unwrap().clone())
+        let keydir =
+            bincode::deserialize_from(&*self.keydir_handle.clone().unwrap().read().unwrap())
                 .map_err(KvStoreError::BincodeSerialization)?;
         Ok(keydir)
     }
@@ -395,15 +402,21 @@ impl KvStore {
     ///
     /// Note that this is not entirely safe as the application could crash between
     /// operations.
-    fn commit_keydir(&mut self) -> Result<()> {
-        self.keydir_handle
-            .as_mut()
-            .ok_or(KvStoreError::NoKeydir)?
+    fn commit_keydir(&self) -> Result<()> {
+        let _ = &self
+            .keydir_handle
+            .clone()
+            .expect("Keydir file should exist")
+            .write()
+            .unwrap()
             .seek(SeekFrom::Start(0))
             .unwrap();
-        bincode::serialize_into(self.keydir_handle.as_mut().unwrap(), &self.keydir)
-            .map_err(KvStoreError::BincodeSerialization)?;
-        self.keydir_handle.as_mut().unwrap().flush().unwrap();
+
+        bincode::serialize_into(
+            &*self.keydir_handle.clone().unwrap().read().unwrap(),
+            &self.keydir,
+        )
+        .expect("Serialize keydir to file");
         Ok(())
     }
 
