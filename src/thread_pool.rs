@@ -8,11 +8,11 @@ pub trait ThreadPool {
         F: FnOnce() + Send + 'static;
 }
 
-pub struct SharedQueueThreadPool;
+pub struct NaiveThreadPool;
 
-impl ThreadPool for SharedQueueThreadPool {
-    fn new(threads: u32) -> anyhow::Result<Self> {
-        Ok(SharedQueueThreadPool)
+impl ThreadPool for NaiveThreadPool {
+    fn new(_threads: u32) -> anyhow::Result<Self> {
+        Ok(NaiveThreadPool)
     }
 
     fn spawn<F>(&self, job: F)
@@ -23,11 +23,11 @@ impl ThreadPool for SharedQueueThreadPool {
     }
 }
 
-pub struct NaiveThreadPool;
+pub struct SharedQueueThreadPool;
 
-impl ThreadPool for NaiveThreadPool {
+impl ThreadPool for SharedQueueThreadPool {
     fn new(threads: u32) -> anyhow::Result<Self> {
-        Ok(NaiveThreadPool)
+        Ok(SharedQueueThreadPool)
     }
 
     fn spawn<F>(&self, job: F)
