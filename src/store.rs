@@ -216,7 +216,7 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(MAX_LOG_FILE_SIZE, MAX_NUM_LOG_FILES);
+        let mut store = KvStore::new(MAX_LOG_FILE_SIZE);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
@@ -226,7 +226,8 @@ impl KvStore {
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.active_log_handle = Some(Arc::new(RwLock::new(store.create_log_file()?)));
+        store.writer.borrow_mut().active_log_handle =
+            Some(Arc::new(RwLock::new(store.create_log_file()?)));
         store.set_keydir_handle()?;
         store.keydir = store.load_keydir()?;
         debug!("Loaded keydir: {:?}", store.keydir);
@@ -289,28 +290,12 @@ impl KvStore {
                 source: e,
                 filename: next_log_file_name.clone(),
             })?;
-        self.active_log_file = PathBuf::from(next_log_file_name.clone());
-
-        // Do not consider files which satisfy the below criterion as candidates for compaction.
-        let no_compact = |p: &PathBuf| {
-            !p.to_string_lossy().contains("compacted")
-                || !p.to_string_lossy().contains("keydir")
-                || *p != *self.active_log_file // TODO: this doesn't quite work right
-        };
-
-        let inactive_files = glob(&format!("{}/kvs.log*", self.log_location.display()))
-            .unwrap()
-            .map(|p| p.unwrap())
-            .filter(no_compact)
-            .collect::<Vec<_>>();
-        if inactive_files.len() > self.max_num_log_files {
-            debug!(
-                "Compaction required, {inactive_count} inactive files > {max_num_log_files} max allowed: {inactive_files:?}",
-                inactive_count = inactive_files.len(),
-                max_num_log_files = self.max_num_log_files,
-            );
-            self.compact(inactive_files)?;
-        }
+        self.writer.borrow_mut().active_log_file = PathBuf::from(next_log_file_name.clone());
+        debug!(active_file = next_log_file_name, "Created new log file");
+        self.writer
+            .borrow_mut()
+            .bytes_written
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         Ok(log_file)
     }
 
