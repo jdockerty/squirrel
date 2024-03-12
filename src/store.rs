@@ -153,9 +153,9 @@ impl KvsEngine for KvStore {
                     self.writer.borrow().active_log_file.display(),
                 );
 
-                let mut entry_file = std::fs::File::open(entry.file_id.clone()).unwrap();
-                entry_file.seek(SeekFrom::Start(entry.offset)).unwrap();
-                let log_entry: LogEntry = bincode::deserialize_from(entry_file).unwrap();
+                let mut entry_file = std::fs::File::open(entry.file_id.clone())?;
+                entry_file.seek(SeekFrom::Start(entry.offset))?;
+                let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
                 match log_entry.value {
                     Some(value) => Ok(Some(value)),
                     // This is a tombstone value and equates to a deleted key and
@@ -250,17 +250,7 @@ impl KvStore {
             .ok_or(KvStoreError::NoActiveLogFile)?
             .read()
             .unwrap()
-            .metadata()
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: self
-                    .writer
-                    .borrow()
-                    .active_log_file
-                    .as_path()
-                    .to_string_lossy()
-                    .to_string(),
-            })?
+            .metadata()?
             .len();
 
         bincode::serialize_into(
@@ -269,12 +259,11 @@ impl KvStore {
                 .borrow_mut()
                 .active_log_handle
                 .as_ref()
-                .unwrap()
+                .ok_or(KvStoreError::NoActiveLogFile)?
                 .write()
                 .unwrap(),
             &entry,
-        )
-        .unwrap();
+        )?;
 
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
@@ -286,11 +275,7 @@ impl KvStore {
         let log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&next_log_file_name)
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: next_log_file_name.clone(),
-            })?;
+            .open(&next_log_file_name)?;
         self.writer.borrow_mut().active_log_file = PathBuf::from(next_log_file_name.clone());
         debug!(active_file = next_log_file_name, "Created new log file");
         self.writer
@@ -326,39 +311,25 @@ impl KvStore {
         let mut compaction_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&compacted_filename)
-            .unwrap();
+            .open(&compacted_filename)?;
 
         let mut entries: Vec<(LogEntry, u64)> = Vec::new();
 
         debug!(keydir_size = self.keydir.len());
         let mut counter = 0;
         for entry in self.keydir.iter() {
-            let mut file =
-                std::fs::File::open(&entry.file_id).map_err(|e| KvStoreError::IoError {
-                    source: e,
-                    filename: entry.file_id.display().to_string(),
-                })?;
-            file.seek(SeekFrom::Start(entry.offset))
-                .map_err(|e| KvStoreError::IoError {
-                    source: e,
-                    filename: self
-                        .writer
-                        .borrow()
-                        .active_log_file
-                        .as_path()
-                        .to_string_lossy()
-                        .to_string(),
-                })?;
+            let mut file = std::fs::File::open(&entry.file_id)?;
+            file.seek(SeekFrom::Start(entry.offset))?;
             let log_entry: LogEntry = bincode::deserialize_from(&mut file)?;
 
-            if log_entry.operation != Operation::Remove && entry.timestamp >= log_entry.timestamp {
+            // Implicitly remove tombstone values by not adding them into the new file.
+            if log_entry.operation != Operation::Remove {
                 counter += 1;
                 let offset = compaction_file
                     .metadata()
                     .expect("file exists to check metadata")
                     .len();
-                bincode::serialize_into(&mut compaction_file, &log_entry).unwrap();
+                bincode::serialize_into(&mut compaction_file, &log_entry)?;
                 entries.push((log_entry, offset));
             }
         }
@@ -373,13 +344,7 @@ impl KvStore {
         }
         self.commit_keydir()?;
 
-        debug!(removed_file = self.writer.borrow().active_log_file.display().to_string());
-        std::fs::remove_file(&self.writer.borrow().active_log_file).map_err(|e| {
-            KvStoreError::IoError {
-                source: e,
-                filename: self.writer.borrow().active_log_file.display().to_string(),
-            }
-        })?;
+        std::fs::remove_file(&self.writer.borrow().active_log_file)?;
         self.set_active_log_handle()?;
 
         debug!(compacted_entries = counter);
@@ -398,11 +363,7 @@ impl KvStore {
             .read(true)
             .write(true) // To enable creation in the case where the file doesn't exist.
             .create(true)
-            .open(self.keydir_location.as_path())
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: self.keydir_location.display().to_string().clone(),
-            })?;
+            .open(self.keydir_location.as_path())?;
 
         self.keydir_handle = Some(Arc::new(RwLock::new(keydir_file)));
         Ok(())
@@ -416,11 +377,7 @@ impl KvStore {
             .ok_or(KvStoreError::NoKeydir)?
             .read()
             .unwrap()
-            .metadata()
-            .map_err(|e| KvStoreError::IoError {
-                source: e,
-                filename: self.keydir_location.display().to_string().clone(),
-            })?
+            .metadata()?
             .len();
         debug!(size = keydir_file_size, "keydir file size");
 
@@ -429,9 +386,14 @@ impl KvStore {
             return Ok(DashMap::new());
         }
 
-        let keydir =
-            bincode::deserialize_from(&*self.keydir_handle.clone().unwrap().read().unwrap())
-                .unwrap();
+        let keydir = bincode::deserialize_from(
+            &*self
+                .keydir_handle
+                .clone()
+                .ok_or(KvStoreError::NoKeydir)?
+                .read()
+                .unwrap(),
+        )?;
         Ok(keydir)
     }
 
@@ -445,17 +407,20 @@ impl KvStore {
         let _ = &self
             .keydir_handle
             .clone()
-            .expect("Keydir file should exist")
+            .ok_or(KvStoreError::NoKeydir)?
             .write()
             .unwrap()
-            .seek(SeekFrom::Start(0))
-            .unwrap();
+            .seek(SeekFrom::Start(0))?;
 
         bincode::serialize_into(
-            &*self.keydir_handle.clone().unwrap().read().unwrap(),
+            &*self
+                .keydir_handle
+                .clone()
+                .ok_or(KvStoreError::NoKeydir)?
+                .read()
+                .unwrap(),
             &self.keydir,
-        )
-        .expect("Serialize keydir to file");
+        )?;
         Ok(())
     }
 
@@ -463,10 +428,7 @@ impl KvStore {
     /// We must return an error if previously opened with another engine, as they are incompatible.
     pub fn engine_is_kvs(current_engine: String, engine_path: PathBuf) -> Result<()> {
         if engine_path.exists() {
-            let engine_type = std::fs::read_to_string(engine_path)
-                .unwrap()
-                .trim()
-                .to_string();
+            let engine_type = std::fs::read_to_string(engine_path)?.trim().to_string();
 
             if engine_type != current_engine {
                 return Err(KvStoreError::IncorrectEngine {
@@ -475,7 +437,7 @@ impl KvStore {
                 });
             }
         } else {
-            std::fs::write(engine_path, current_engine).unwrap();
+            std::fs::write(engine_path, current_engine)?;
         }
         Ok(())
     }
