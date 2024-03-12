@@ -1,7 +1,7 @@
 use crate::engine::KvsEngine;
 use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::fs::File;
@@ -102,8 +102,9 @@ impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     fn set(&self, key: String, value: String) -> Result<()> {
         debug!(key, value, "Setting key");
+        let timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap();
         let entry = LogEntry {
-            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+            timestamp,
             operation: Operation::Set,
             key: key.clone(),
             value: Some(value),
@@ -133,7 +134,7 @@ impl KvsEngine for KvStore {
         let entry = KeydirEntry {
             file_id: self.writer.borrow().active_log_file.clone(),
             offset,
-            timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap(),
+            timestamp,
         };
         self.keydir.insert(key.clone(), entry);
         Ok(())
