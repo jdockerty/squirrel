@@ -5,8 +5,9 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
+use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 use tracing::{self, debug};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
@@ -21,8 +22,9 @@ pub enum Operation {
 #[derive(Clone, Debug)]
 pub struct StoreWriter {
     active_log_file: Arc<RwLock<PathBuf>>,
-    active_log_handle: Option<Arc<File>>,
-    bytes_written: Arc<AtomicU64>,
+    // TODO: can we hold BufWriter's here?
+    active_log_handle: Option<Arc<RwLock<File>>>,
+    position: Arc<AtomicUsize>,
 }
 
 impl StoreWriter {
@@ -30,7 +32,7 @@ impl StoreWriter {
         StoreWriter {
             active_log_file: Arc::new(RwLock::new(PathBuf::default())),
             active_log_handle: None,
-            bytes_written: Arc::new(AtomicU64::new(0)),
+            position: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -84,7 +86,7 @@ struct KeydirEntry {
     file_id: PathBuf,
 
     /// The offset of the entry in the log file.
-    offset: u64,
+    offset: usize,
 
     timestamp: i64,
 }
@@ -110,7 +112,13 @@ impl KvsEngine for KvStore {
             value: Some(value),
         };
 
-        let offset = self.append_to_log(&entry)?;
+        let pos = self
+            .writer
+            .read()
+            .unwrap()
+            .position
+            .load(std::sync::atomic::Ordering::SeqCst);
+        self.append_to_log(&entry)?;
 
         let entry = KeydirEntry {
             file_id: self
@@ -121,20 +129,14 @@ impl KvsEngine for KvStore {
                 .read()
                 .unwrap()
                 .clone(),
-            offset,
+            offset: pos,
             timestamp,
         };
         self.keydir.insert(key, entry);
-        let old = self
-            .writer
-            .write()
-            .unwrap()
-            .bytes_written
-            .fetch_add(offset, std::sync::atomic::Ordering::SeqCst);
         // Retrieve the new value without having to load the atomic value again.
-        if old + offset > self.max_log_file_size {
+        if pos as u64 > self.max_log_file_size {
             debug!(
-                current_size = old + offset,
+                current_size = pos,
                 max_log_file_size = self.max_log_file_size,
                 active_file = self
                     .writer
@@ -173,7 +175,7 @@ impl KvsEngine for KvStore {
                 );
 
                 let mut entry_file = std::fs::File::open(&entry.file_id)?;
-                entry_file.seek(SeekFrom::Start(entry.offset))?;
+                entry_file.seek(SeekFrom::Start(entry.offset as u64))?;
                 let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
                 match log_entry.value {
                     Some(value) => Ok(Some(value)),
@@ -197,15 +199,15 @@ impl KvsEngine for KvStore {
                     value: None,
                 };
 
-                let offset = self.append_to_log(&tombstone)?;
-                let old = self
+                let pos = self
                     .writer
-                    .write()
+                    .read()
                     .unwrap()
-                    .bytes_written
-                    .fetch_add(offset, std::sync::atomic::Ordering::SeqCst);
+                    .position
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                self.append_to_log(&tombstone)?;
 
-                if old + offset > self.max_log_file_size {
+                if pos as u64 > self.max_log_file_size {
                     self.compact()?;
                 }
                 self.commit_keydir()?;
@@ -253,7 +255,8 @@ impl KvStore {
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.writer.write().unwrap().active_log_handle = Some(Arc::new(store.create_log_file()?));
+        store.writer.write().unwrap().active_log_handle =
+            Some(Arc::new(RwLock::new(store.create_log_file()?)));
         store.set_keydir_handle()?;
         store.keydir = Arc::new(store.load_keydir()?);
         debug!("Loaded keydir: {:?}", store.keydir);
@@ -264,38 +267,22 @@ impl KvStore {
     /// Append a log into the active log file. This acts as a Write-ahead log (WAL)
     /// and is an operation which should be taken before other operations, such as
     /// updating the keydir.
-    fn append_to_log(&self, entry: &LogEntry) -> Result<u64> {
-        let offset: u64;
-
-        {
-            let read_lock = self.writer.read().unwrap();
-            let read_lock = read_lock
-                .active_log_handle
-                .as_ref()
-                .ok_or(KvStoreError::NoActiveLogFile)?
-                .read()
-                .unwrap();
-            // The offset is where the last entry in the log file ends, this is because
-            // the log file is an append-only log.
-            offset = read_lock.metadata()?.len();
-        }
-
-        {
-            let write_lock = self.writer.write().unwrap();
-            let write_lock = write_lock
-                .active_log_handle
-                .as_ref()
-                .ok_or(KvStoreError::NoActiveLogFile)?
-                .write()
-                .unwrap();
-            bincode::serialize_into(&*write_lock, &entry)?;
-        }
+    fn append_to_log(&self, entry: &LogEntry) -> Result<()> {
+        let write_lock = self.writer.write().unwrap();
+        let mut file_lock = write_lock
+            .active_log_handle
+            .as_ref()
+            .ok_or(KvStoreError::NoActiveLogFile)?
+            .write()
+            .unwrap();
+        let data = bincode::serialize(&entry)?;
+        file_lock.write_all(&data)?;
+        file_lock.flush()?;
+        write_lock
+            .position
+            .fetch_add(data.len(), std::sync::atomic::Ordering::SeqCst);
         debug!(
-            offset,
-            active_file_set = self
-                .writer
-                .read()
-                .unwrap()
+            active_file_set = write_lock
                 .active_log_file
                 .read()
                 .unwrap()
@@ -306,7 +293,7 @@ impl KvStore {
 
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
-        Ok(offset)
+        Ok(())
     }
 
     fn create_log_file(&self) -> Result<File> {
@@ -321,7 +308,7 @@ impl KvStore {
         self.writer
             .write()
             .unwrap()
-            .bytes_written
+            .position
             .store(0, std::sync::atomic::Ordering::SeqCst);
         Ok(log_file)
     }
@@ -349,6 +336,7 @@ impl KvStore {
     fn compact(&self) -> Result<()> {
         // Generate a new log file to write the compacted entries to.
         let compacted_filename = self.next_log_file_name();
+        // TODO: This can be a BufWriter to improve performance.
         let mut compaction_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -365,12 +353,14 @@ impl KvStore {
         // in the keydir, which can include files from prior compaction.
         // Once they are no longer referenced, they can be safely removed.
         let active_files = Arc::new(DashMap::new());
+
+        let mut compact_pos = 0;
         for entry in self.keydir.as_ref() {
             let mut file = file_handles
                 .entry(entry.file_id.clone())
                 .or_insert_with(|| std::fs::File::open(&entry.file_id).unwrap());
 
-            file.seek(SeekFrom::Start(entry.offset))?;
+            file.seek(SeekFrom::Start(entry.offset as u64))?;
             let log_entry: LogEntry = bincode::deserialize_from(&mut *file)?;
 
             // Implicitly remove tombstone values by not adding them into the new file
@@ -384,12 +374,12 @@ impl KvStore {
                 .entry(entry.file_id.clone())
                 .and_modify(|f: &mut u64| *f += 1)
                 .or_default();
-            let offset = compaction_file
-                .metadata()
-                .expect("file exists to check metadata")
-                .len();
-            bincode::serialize_into(&mut compaction_file, &log_entry)?;
-            entries.push((log_entry, offset));
+            let data = bincode::serialize(&log_entry)?;
+            let written = compaction_file.write(&data)?;
+            compaction_file.flush()?;
+
+            entries.push((log_entry, compact_pos));
+            compact_pos += written as u64;
         }
 
         for (log_entry, offset) in entries {
@@ -401,7 +391,7 @@ impl KvStore {
                     }
                 });
                 e.file_id = PathBuf::from(&compacted_filename);
-                e.offset = offset;
+                e.offset = offset as usize;
             });
         }
         self.commit_keydir()?;
