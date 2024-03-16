@@ -360,11 +360,21 @@ impl KvStore {
 
         let mut entries: Vec<(LogEntry, u64)> = Vec::new();
         debug!(keydir_size = self.keydir.len());
-        let mut counter = 0;
+
+        // Maintain a map of handles to avoid opening a new file on every single
+        // log entry.
+        let file_handles: DashMap<PathBuf, File> = DashMap::new();
+        // Build a map of active files, these are files which are still being referenced
+        // in the keydir, which can include files from prior compaction.
+        // Once they are no longer referenced, they can be safely removed.
+        let active_files: DashMap<PathBuf, u64> = DashMap::new();
         for entry in &self.keydir {
-            let mut file = std::fs::File::open(&entry.file_id)?;
+            let mut file = file_handles
+                .entry(entry.file_id.clone())
+                .or_insert_with(|| std::fs::File::open(&entry.file_id).unwrap());
+
             file.seek(SeekFrom::Start(entry.offset))?;
-            let log_entry: LogEntry = bincode::deserialize_from(&mut file)?;
+            let log_entry: LogEntry = bincode::deserialize_from(&mut *file)?;
 
             // Implicitly remove tombstone values by not adding them into the new file
             // and removing them from the keydir.
@@ -373,7 +383,10 @@ impl KvStore {
                 continue;
             }
 
-            counter += 1;
+            active_files
+                .entry(entry.file_id.clone())
+                .and_modify(|f| *f += 1)
+                .or_default();
             let offset = compaction_file
                 .metadata()
                 .expect("file exists to check metadata")
@@ -384,17 +397,26 @@ impl KvStore {
 
         for (log_entry, offset) in entries {
             self.keydir.entry(log_entry.key).and_modify(|e| {
+                active_files.entry(e.file_id.clone()).and_modify(|f| {
+                    if *f > 0 {
+                        // Don't reduce below 0, this would be an underflow error
+                        *f -= 1
+                    }
+                });
                 e.file_id = PathBuf::from(&compacted_filename);
                 e.offset = offset;
             });
         }
         self.commit_keydir()?;
 
-        debug!("Removing current active log file");
-        std::fs::remove_file(&*self.writer.read().unwrap().active_log_file.read().unwrap())?;
         self.set_active_log_handle()?;
+        for file in &active_files {
+            if *file.value() == 0 {
+                debug!(f = ?file.key(), "Removing file which has no entries");
+                std::fs::remove_file(file.key())?;
+            }
+        }
 
-        debug!(compacted_entries = counter);
         debug!("Compaction complete, latest entries are available in {compacted_filename}");
         Ok(())
     }
