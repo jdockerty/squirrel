@@ -14,4 +14,4 @@ pub const ENGINE_FILE: &str = ".engine";
 // Smaller sizes for forcing compaction in tests.
 const MAX_LOG_FILE_SIZE: u64 = 1024 * 1024;
 
-pub type Result<T> = std::result::Result<T, error::Error>;
+pub type Result<T> = anyhow::Result<T, KvStoreError>;
