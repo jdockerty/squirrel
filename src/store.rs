@@ -3,8 +3,6 @@ use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
 use std::path::PathBuf;
@@ -20,10 +18,10 @@ pub enum Operation {
     Remove,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StoreWriter {
     active_log_file: Arc<RwLock<PathBuf>>,
-    active_log_handle: Option<Arc<RwLock<File>>>,
+    active_log_handle: Option<Arc<File>>,
     bytes_written: Arc<AtomicU64>,
 }
 
@@ -44,7 +42,7 @@ impl Default for StoreWriter {
 }
 
 /// An in-memory key-value store inspired by Bitcask.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KvStore {
     pub writer: Arc<RwLock<StoreWriter>>,
 
@@ -58,7 +56,7 @@ pub struct KvStore {
     /// contains the offset to the entry in the log file.
     ///
     /// This uses [`DashMap`] to allow for concurrent reads and writes.
-    keydir: DashMap<String, KeydirEntry>,
+    keydir: Arc<DashMap<String, KeydirEntry>>,
 
     keydir_handle: Option<Arc<RwLock<File>>>,
 
@@ -227,7 +225,7 @@ impl KvStore {
             writer: Arc::new(RwLock::new(StoreWriter::default())),
             log_location: PathBuf::default(),
             keydir_location: PathBuf::default(),
-            keydir: DashMap::new(),
+            keydir: Arc::new(DashMap::new()),
             keydir_handle: None,
             max_log_file_size, // TODO: increase
             _tracing: None,
@@ -255,10 +253,9 @@ impl KvStore {
         store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
-        store.writer.write().unwrap().active_log_handle =
-            Some(Arc::new(RwLock::new(store.create_log_file()?)));
+        store.writer.write().unwrap().active_log_handle = Some(Arc::new(store.create_log_file()?));
         store.set_keydir_handle()?;
-        store.keydir = store.load_keydir()?;
+        store.keydir = Arc::new(store.load_keydir()?);
         debug!("Loaded keydir: {:?}", store.keydir);
 
         Ok(store)
@@ -363,12 +360,12 @@ impl KvStore {
 
         // Maintain a map of handles to avoid opening a new file on every single
         // log entry.
-        let file_handles: DashMap<PathBuf, File> = DashMap::new();
+        let file_handles = Arc::new(DashMap::new());
         // Build a map of active files, these are files which are still being referenced
         // in the keydir, which can include files from prior compaction.
         // Once they are no longer referenced, they can be safely removed.
-        let active_files: DashMap<PathBuf, u64> = DashMap::new();
-        for entry in &self.keydir {
+        let active_files = Arc::new(DashMap::new());
+        for entry in self.keydir.as_ref() {
             let mut file = file_handles
                 .entry(entry.file_id.clone())
                 .or_insert_with(|| std::fs::File::open(&entry.file_id).unwrap());
@@ -385,7 +382,7 @@ impl KvStore {
 
             active_files
                 .entry(entry.file_id.clone())
-                .and_modify(|f| *f += 1)
+                .and_modify(|f: &mut u64| *f += 1)
                 .or_default();
             let offset = compaction_file
                 .metadata()
@@ -410,7 +407,7 @@ impl KvStore {
         self.commit_keydir()?;
 
         self.set_active_log_handle()?;
-        for file in &active_files {
+        for file in active_files.as_ref() {
             if *file.value() == 0 {
                 debug!(f = ?file.key(), "Removing file which has no entries");
                 std::fs::remove_file(file.key())?;
@@ -488,7 +485,7 @@ impl KvStore {
                 .ok_or(KvStoreError::NoKeydir)?
                 .read()
                 .unwrap(),
-            &self.keydir,
+            self.keydir.as_ref(),
         )?;
         Ok(())
     }
