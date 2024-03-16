@@ -361,12 +361,15 @@ impl KvStore {
         let mut entries: Vec<(LogEntry, u64)> = Vec::new();
         debug!(keydir_size = self.keydir.len());
         let mut counter = 0;
-        for entry in self.keydir.iter() {
+        for entry in &self.keydir {
             let mut file = std::fs::File::open(&entry.file_id)?;
+            file.seek(SeekFrom::Start(entry.offset))?;
             let log_entry: LogEntry = bincode::deserialize_from(&mut file)?;
 
-            // Implicitly remove tombstone values by not adding them into the new file.
+            // Implicitly remove tombstone values by not adding them into the new file
+            // and removing them from the keydir.
             if log_entry.operation == Operation::Remove {
+                self.keydir.remove(entry.key());
                 continue;
             }
 
@@ -383,7 +386,6 @@ impl KvStore {
             self.keydir.entry(log_entry.key).and_modify(|e| {
                 e.file_id = PathBuf::from(&compacted_filename);
                 e.offset = offset;
-                e.timestamp = log_entry.timestamp;
             });
         }
         self.commit_keydir()?;
