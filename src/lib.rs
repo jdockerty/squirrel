@@ -7,7 +7,7 @@ pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
 pub use store::KvStore;
 
-pub const LOG_PREFIX: &str = "kvs.log";
+pub const LOG_PREFIX: &str = "kvs";
 pub const KEYDIR_NAME: &str = "kvs-keydir";
 pub const ENGINE_FILE: &str = ".engine";
 

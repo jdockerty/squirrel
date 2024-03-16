@@ -334,7 +334,11 @@ impl KvStore {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        format!("{}{}", self.log_location.join(LOG_PREFIX).display(), now)
+        format!(
+            "{}{}.log",
+            self.log_location.join(LOG_PREFIX).display(),
+            now
+        )
     }
 
     /// Perform compaction on the inactive log files.
