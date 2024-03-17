@@ -243,7 +243,7 @@ impl KvStore {
             .with(tracing::level_filters::LevelFilter::DEBUG)
             .with(layer);
         let tracing_guard = tracing::subscriber::set_default(subscriber);
-        let mut store = KvStore::new(MAX_LOG_FILE_SIZE);
+        let mut store = KvStore::new(MAX_LOG_FILE_SIZE.with(|f| *f));
         store.set_tracing(tracing_guard);
 
         let path = path.into();
