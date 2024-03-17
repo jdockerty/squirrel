@@ -5,9 +5,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
-use std::os::unix::prelude::FileExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, RwLock};
 use tracing::{self, debug};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
@@ -336,11 +335,11 @@ impl KvStore {
     fn compact(&self) -> Result<()> {
         // Generate a new log file to write the compacted entries to.
         let compacted_filename = self.next_log_file_name();
-        // TODO: This can be a BufWriter to improve performance.
-        let mut compaction_file = std::fs::OpenOptions::new()
+        let compaction_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&compacted_filename)?;
+        let mut buf_writer = std::io::BufWriter::new(&compaction_file);
         debug!(compaction_file = compacted_filename, "Compacting log files");
 
         let mut entries: Vec<(LogEntry, u64)> = Vec::new();
@@ -375,8 +374,8 @@ impl KvStore {
                 .and_modify(|f: &mut u64| *f += 1)
                 .or_default();
             let data = bincode::serialize(&log_entry)?;
-            let written = compaction_file.write(&data)?;
-            compaction_file.flush()?;
+            let written = buf_writer.write(&data)?;
+            buf_writer.flush()?;
 
             entries.push((log_entry, compact_pos));
             compact_pos += written as u64;
