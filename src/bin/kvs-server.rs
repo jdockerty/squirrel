@@ -1,5 +1,6 @@
 use clap::Parser;
 use kvs::client::Action;
+use kvs::thread_pool::{NaiveThreadPool, ThreadPool};
 use kvs::KvStore;
 use kvs::KvsEngine;
 use kvs::ENGINE_FILE;
@@ -71,40 +72,43 @@ fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(app.addr)?;
     info!("listening on {}", app.addr);
+    let pool = NaiveThreadPool::new(4)?;
 
     while let Ok((mut stream, _)) = listener.accept() {
         debug!("Connection established: {stream:?}");
+        let kv = kv.clone();
+        pool.spawn(move || {
+            // We know the actions that a client can take, so we can encode and decode them
+            // to know what action we should take.
+            let action: Action = bincode::deserialize_from(&stream).unwrap();
+            debug!("Received action: {action:?}");
 
-        // We know the actions that a client can take, so we can encode and decode them
-        // to know what action we should take.
-        let action: Action = bincode::deserialize_from(&stream)?;
-        debug!("Received action: {action:?}");
-
-        match &action {
-            Action::Set { key, value } => match kv.set(key.to_string(), value.to_string()) {
-                Ok(_) => debug!("{key} set to {value}"),
-                Err(e) => error!("{}", e),
-            },
-            Action::Get { key } => match kv.get(key.to_string()) {
-                Ok(Some(value)) => {
-                    debug!("{key} has value: {value}");
-                    write!(stream, "{}", value)?;
-                }
-                Ok(None) => {
-                    debug!("{key} not found");
-                    write!(stream, "Key not found")?;
-                }
-                Err(e) => error!("{}", e),
-            },
-            Action::Remove { key } => match kv.remove(key.to_string()) {
-                Ok(_) => debug!("{key} removed"),
-                Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
-                    debug!("{key} not found");
-                    write!(stream, "Key not found")?;
-                }
-                Err(e) => error!("{}", e),
-            },
-        }
+            match &action {
+                Action::Set { key, value } => match kv.set(key.to_string(), value.to_string()) {
+                    Ok(_) => debug!("{key} set to {value}"),
+                    Err(e) => error!("{}", e),
+                },
+                Action::Get { key } => match kv.get(key.to_string()) {
+                    Ok(Some(value)) => {
+                        debug!("{key} has value: {value}");
+                        write!(stream, "{}", value).unwrap();
+                    }
+                    Ok(None) => {
+                        debug!("{key} not found");
+                        write!(stream, "Key not found").unwrap();
+                    }
+                    Err(e) => error!("{}", e),
+                },
+                Action::Remove { key } => match kv.remove(key.to_string()) {
+                    Ok(_) => debug!("{key} removed"),
+                    Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
+                        debug!("{key} not found");
+                        write!(stream, "Key not found").unwrap();
+                    }
+                    Err(e) => error!("{}", e),
+                },
+            }
+        })
     }
     Ok(())
 }
