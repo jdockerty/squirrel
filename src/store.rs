@@ -351,7 +351,12 @@ impl KvStore {
         for entry in self.keydir.as_ref() {
             let mut file = file_handles
                 .entry(entry.file_id.clone())
-                .or_insert_with(|| std::fs::File::open(&entry.file_id).unwrap());
+                .or_insert_with(|| {
+                    BufReader::new(
+                        std::fs::File::open(&entry.file_id)
+                            .expect("Log file should exist for compaction"),
+                    )
+                });
 
             file.seek(SeekFrom::Start(entry.offset as u64))?;
             let log_entry: LogEntry = bincode::deserialize_from(&mut *file)?;
