@@ -4,7 +4,7 @@ use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{prelude::*, SeekFrom};
+use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -333,14 +333,14 @@ impl KvStore {
             .create(true)
             .append(true)
             .open(&compacted_filename)?;
-        let mut buf_writer = std::io::BufWriter::new(&compaction_file);
+        let mut compaction_buf = BufWriter::new(&compaction_file);
         debug!(compaction_file = compacted_filename, "Compacting log files");
 
         let mut entries: Vec<(LogEntry, u64)> = Vec::new();
         debug!(keydir_size = self.keydir.len());
 
         // Maintain a map of handles to avoid opening a new file on every single
-        // log entry.
+        // log entry multiple times.
         let file_handles = Arc::new(DashMap::new());
         // Build a map of active files, these are files which are still being referenced
         // in the keydir, which can include files from prior compaction.
@@ -368,12 +368,12 @@ impl KvStore {
                 .and_modify(|f: &mut u64| *f += 1)
                 .or_default();
             let data = bincode::serialize(&log_entry)?;
-            let written = buf_writer.write(&data)?;
-            buf_writer.flush()?;
+            let written = compaction_buf.write(&data)?;
 
             entries.push((log_entry, compact_pos));
             compact_pos += written as u64;
         }
+        compaction_buf.flush()?;
 
         for (log_entry, offset) in entries {
             self.keydir.entry(log_entry.key).and_modify(|e| {
