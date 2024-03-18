@@ -5,11 +5,12 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, SeekFrom};
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, RwLock};
+use std::usize;
 use tracing::{self, debug};
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Operation {
@@ -111,13 +112,20 @@ impl KvsEngine for KvStore {
             value: Some(value),
         };
 
-        let pos = self
-            .writer
-            .read()
-            .unwrap()
-            .position
-            .load(std::sync::atomic::Ordering::SeqCst);
-        self.append_to_log(&entry)?;
+        let pos = self.append_to_log(&entry)?;
+        debug!(
+            position = pos,
+            active_file = self
+                .writer
+                .read()
+                .unwrap()
+                .active_log_file
+                .read()
+                .unwrap()
+                .display()
+                .to_string(),
+            "Appended to log"
+        );
 
         let entry = KeydirEntry {
             file_id: self
@@ -238,13 +246,7 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing::level_filters::LevelFilter::DEBUG)
-            .with(layer);
-        let tracing_guard = tracing::subscriber::set_default(subscriber);
         let mut store = KvStore::new(MAX_LOG_FILE_SIZE.with(|f| *f));
-        store.set_tracing(tracing_guard);
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
@@ -258,41 +260,33 @@ impl KvStore {
             Some(Arc::new(RwLock::new(store.create_log_file()?)));
         store.set_keydir_handle()?;
         store.keydir = Arc::new(store.load_keydir()?);
-        debug!("Loaded keydir: {:?}", store.keydir);
-
         Ok(store)
     }
 
     /// Append a log into the active log file. This acts as a Write-ahead log (WAL)
     /// and is an operation which should be taken before other operations, such as
     /// updating the keydir.
-    fn append_to_log(&self, entry: &LogEntry) -> Result<()> {
+    fn append_to_log(&self, entry: &LogEntry) -> Result<usize> {
+        let data = bincode::serialize(&entry)?;
+
         let write_lock = self.writer.write().unwrap();
+        let pos = write_lock
+            .position
+            .load(std::sync::atomic::Ordering::SeqCst);
         let mut file_lock = write_lock
             .active_log_handle
             .as_ref()
             .ok_or(KvStoreError::NoActiveLogFile)?
             .write()
             .unwrap();
-        let data = bincode::serialize(&entry)?;
-        file_lock.write_all(&data)?;
+        file_lock.write_at(&data, pos as u64)?;
         file_lock.flush()?;
         write_lock
             .position
             .fetch_add(data.len(), std::sync::atomic::Ordering::SeqCst);
-        debug!(
-            active_file_set = write_lock
-                .active_log_file
-                .read()
-                .unwrap()
-                .display()
-                .to_string(),
-            "Appended to log"
-        );
-
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
-        Ok(())
+        Ok(pos)
     }
 
     fn create_log_file(&self) -> Result<File> {
