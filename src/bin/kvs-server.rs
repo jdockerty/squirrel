@@ -1,9 +1,9 @@
 use clap::Parser;
 use kvs::client::Action;
-use kvs::thread_pool::{NaiveThreadPool, ThreadPool};
 use kvs::KvStore;
 use kvs::KvsEngine;
 use kvs::ENGINE_FILE;
+use rayon::ThreadPoolBuilder;
 use std::io::Write;
 use std::{ffi::OsString, path::PathBuf};
 use std::{
@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(app.addr)?;
     info!("listening on {}", app.addr);
-    let pool = NaiveThreadPool::new(4)?;
+    let pool = ThreadPoolBuilder::new().build()?;
 
     while let Ok((mut stream, _)) = listener.accept() {
         debug!("Connection established: {stream:?}");
