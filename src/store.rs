@@ -2,6 +2,7 @@ use crate::engine::KvsEngine;
 use crate::{KvStoreError, Result};
 use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
+use glob::glob;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, RwLock};
 use std::usize;
-use tracing::{self, debug};
+use tracing::{self, debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Operation {
@@ -91,15 +92,6 @@ struct KeydirEntry {
     timestamp: i64,
 }
 
-impl Drop for KvStore {
-    fn drop(&mut self) {
-        // By persisting the keydir to disk on drop, this means that the keydir
-        // is safely stored when the [`KvStore`] drops out of scope.
-        self.commit_keydir()
-            .expect("Unable to commit keydir to disk");
-    }
-}
-
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     fn set(&self, key: String, value: String) -> Result<()> {
@@ -158,7 +150,6 @@ impl KvsEngine for KvStore {
             );
             self.compact()?;
         }
-        self.commit_keydir()?;
         Ok(())
     }
 
@@ -217,7 +208,6 @@ impl KvsEngine for KvStore {
                 if pos as u64 > self.max_log_file_size {
                     self.compact()?;
                 }
-                self.commit_keydir()?;
                 Ok(())
             }
             None => Err(KvStoreError::RemoveOperationWithNoKey),
@@ -247,6 +237,7 @@ impl KvStore {
         P: Into<PathBuf>,
     {
         let mut store = KvStore::new(MAX_LOG_FILE_SIZE.with(|f| *f));
+        store.load()?;
 
         let path = path.into();
         let keydir_path = path.join(KEYDIR_NAME);
@@ -259,8 +250,57 @@ impl KvStore {
         store.writer.write().unwrap().active_log_handle =
             Some(Arc::new(RwLock::new(store.create_log_file()?)));
         store.set_keydir_handle()?;
-        store.keydir = Arc::new(store.load_keydir()?);
         Ok(store)
+    }
+
+    fn load(&self) -> Result<()> {
+        let log_files = match glob("kvs*.log") {
+            Ok(files) => files,
+            Err(e) => {
+                warn!("No log files found: {}", e);
+                return Ok(());
+            }
+        };
+        info!("Rebuilding keydir");
+
+        log_files.for_each(|file| {
+            let file = file.unwrap();
+            info!(file = ?file.display(), "Reading log file");
+            let f = File::open(&file).unwrap();
+            let file_size = f.metadata().unwrap().len();
+
+            if file_size == 0 {
+                info!("Skipping empty log file");
+                return;
+            }
+            let mut reader = BufReaderWithOffset::new(f);
+            loop {
+                let pos = reader.offset();
+                if file_size as usize == pos {
+                    break;
+                }
+                info!(position = pos);
+                let entry: LogEntry = bincode::deserialize_from(&mut reader).unwrap();
+                info!(?entry);
+                match entry.operation {
+                    Operation::Set => {
+                        let key = entry.key.clone();
+                        let keydir_entry = KeydirEntry {
+                            file_id: file.clone(),
+                            offset: pos,
+                            timestamp: entry.timestamp,
+                        };
+                        self.keydir.insert(key, keydir_entry);
+                    }
+                    Operation::Remove => {
+                        self.keydir.remove(&entry.key);
+                    }
+                    Operation::Get => {}
+                }
+            }
+        });
+
+        Ok(())
     }
 
     /// Append a log into the active log file. This acts as a Write-ahead log (WAL)
@@ -392,7 +432,6 @@ impl KvStore {
                 e.offset = offset as usize;
             });
         }
-        self.commit_keydir()?;
 
         self.set_active_log_handle()?;
         for file in active_files.as_ref() {
@@ -423,61 +462,6 @@ impl KvStore {
         Ok(())
     }
 
-    fn load_keydir(&self) -> Result<DashMap<String, KeydirEntry>> {
-        debug!("Loading keydir");
-        let handle = self.keydir_handle.clone();
-
-        let keydir_file_size = handle
-            .ok_or(KvStoreError::NoKeydir)?
-            .read()
-            .unwrap()
-            .metadata()?
-            .len();
-        debug!(size = keydir_file_size, "keydir file size");
-
-        if keydir_file_size == 0 {
-            debug!("New keydir");
-            return Ok(DashMap::new());
-        }
-
-        let keydir = bincode::deserialize_from(
-            &*self
-                .keydir_handle
-                .clone()
-                .ok_or(KvStoreError::NoKeydir)?
-                .read()
-                .unwrap(),
-        )?;
-        Ok(keydir)
-    }
-
-    /// Commit the keydir to disk to persist its state over crashes of the server.
-    ///
-    /// This is done by serializing the keydir to disk after important operations.
-    ///
-    /// Note that this is not entirely safe as the application could crash between
-    /// operations.
-    fn commit_keydir(&self) -> Result<()> {
-        let _ = &self
-            .keydir_handle
-            .clone()
-            .ok_or(KvStoreError::NoKeydir)?
-            .write()
-            .unwrap()
-            .seek(SeekFrom::Start(0))?;
-
-        bincode::serialize_into(
-            &*self
-                .keydir_handle
-                .clone()
-                .ok_or(KvStoreError::NoKeydir)?
-                .read()
-                .unwrap(),
-            self.keydir.as_ref(),
-        )?;
-        Ok(())
-    }
-
     /// Detect the engine used to create the store.
     /// We must return an error if previously opened with another engine, as they are incompatible.
     pub fn engine_is_kvs(current_engine: String, engine_path: PathBuf) -> Result<()> {
@@ -498,5 +482,35 @@ impl KvStore {
 
     pub fn set_tracing(&mut self, guard: tracing::subscriber::DefaultGuard) {
         self._tracing = Some(Arc::new(guard));
+    }
+}
+
+// A wrapper around BufReader that tracks the offset.
+struct BufReaderWithOffset<R: Read> {
+    reader: BufReader<R>,
+    offset: usize,
+}
+
+impl<R: Read> BufReaderWithOffset<R> {
+    fn new(reader: R) -> Self {
+        BufReaderWithOffset {
+            reader: BufReader::new(reader),
+            offset: 0,
+        }
+    }
+
+    // Method to get the current offset
+    fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl<R: Read> Read for BufReaderWithOffset<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.reader.read(buf);
+        if let Ok(size) = result {
+            self.offset += size;
+        }
+        result
     }
 }
