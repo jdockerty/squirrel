@@ -274,12 +274,12 @@ impl KvStore {
                 info!("Rebuilding keydir");
                 files.for_each(|file| {
                     let file = file.unwrap();
-                    info!(file = ?file.display(), "Reading log file");
+                    debug!(file = ?file.display(), "Reading log file");
                     let f = File::open(&file).unwrap();
                     let file_size = f.metadata().unwrap().len();
 
                     if file_size == 0 {
-                        info!("Skipping empty log file");
+                        info!(?file, "Skipping empty log file");
                         return;
                     }
                     let mut reader = BufReaderWithOffset::new(f);
@@ -288,9 +288,8 @@ impl KvStore {
                         if file_size as usize == pos {
                             break;
                         }
-                        info!(position = pos);
                         let entry: LogEntry = bincode::deserialize_from(&mut reader).unwrap();
-                        info!(?entry);
+                        debug!(?entry, pos);
                         match entry.operation {
                             Operation::Set => {
                                 let key = entry.key.clone();
@@ -310,7 +309,7 @@ impl KvStore {
                 });
             }
             Err(e) => {
-                warn!("No log files found: {}", e);
+                warn!("No log files found, keydir will be empty: {}", e);
                 return Ok(());
             }
         };
