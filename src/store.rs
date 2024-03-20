@@ -8,10 +8,13 @@ use std::fs::File;
 use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, RwLock};
 use std::usize;
+use tracing::level_filters::LevelFilter;
 use tracing::{self, debug, info, warn};
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Operation {
@@ -237,6 +240,8 @@ impl KvStore {
         P: Into<PathBuf>,
     {
         let mut store = KvStore::new(MAX_LOG_FILE_SIZE.with(|f| *f));
+        let log_level = std::env::var("KVS_LOG").unwrap_or("info".to_string());
+        store.setup_logging(log_level)?;
         store.load()?;
 
         let path = path.into();
@@ -480,8 +485,13 @@ impl KvStore {
         Ok(())
     }
 
-    pub fn set_tracing(&mut self, guard: tracing::subscriber::DefaultGuard) {
-        self._tracing = Some(Arc::new(guard));
+    pub fn setup_logging(&mut self, level: String) -> anyhow::Result<()> {
+        let level = LevelFilter::from_str(&level)?;
+        let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+        let subscriber = tracing_subscriber::registry().with(level).with(layer);
+        let tracing_guard = tracing::subscriber::set_default(subscriber);
+        self._tracing = Some(Arc::new(tracing_guard));
+        Ok(())
     }
 }
 

@@ -11,7 +11,6 @@ use std::{
     net::{SocketAddr, TcpListener},
 };
 use tracing::{debug, error, info};
-use tracing_subscriber::prelude::*;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -22,7 +21,7 @@ struct App {
     #[clap(name = "engine", short, long, default_value = "kvs")]
     engine_name: Engine,
 
-    #[clap(long, default_value = "info")]
+    #[clap(long, default_value = "info", env = "KVS_LOG")]
     log_level: tracing_subscriber::filter::LevelFilter,
 
     #[arg(long, global = true, default_value = default_log_location())]
@@ -55,14 +54,7 @@ fn main() -> anyhow::Result<()> {
 
     // We must error if the previous storage engine was not 'kvs' as it is incompatible.
     KvStore::engine_is_kvs(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
-
-    let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-    let subscriber = tracing_subscriber::registry()
-        .with(app.log_level)
-        .with(layer);
-    let tracing_guard = tracing::subscriber::set_default(subscriber);
-    let mut kv = KvStore::open(app.log_file)?;
-    kv.set_tracing(tracing_guard);
+    let kv = KvStore::open(app.log_file)?;
 
     info!(
         "kvs-server version: {}, engine: {}",
