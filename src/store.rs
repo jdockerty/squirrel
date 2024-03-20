@@ -95,6 +95,13 @@ struct KeydirEntry {
     timestamp: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoreConfig {
+    log_location: PathBuf,
+    keydir_location: PathBuf,
+    max_log_file_size: u64,
+}
+
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     fn set(&self, key: String, value: String) -> Result<()> {
@@ -222,14 +229,14 @@ impl KvStore {
     /// Create a new KvStore.
     ///
     /// The store is created in memory and is not persisted to disk.
-    fn new(max_log_file_size: u64) -> KvStore {
+    fn new(config: StoreConfig) -> KvStore {
         KvStore {
             writer: Arc::new(RwLock::new(StoreWriter::default())),
-            log_location: PathBuf::default(),
-            keydir_location: PathBuf::default(),
+            log_location: config.log_location,
+            keydir_location: config.keydir_location,
             keydir: Arc::new(DashMap::new()),
             keydir_handle: None,
-            max_log_file_size, // TODO: increase
+            max_log_file_size: config.max_log_file_size,
             _tracing: None,
         }
     }
@@ -239,17 +246,18 @@ impl KvStore {
     where
         P: Into<PathBuf>,
     {
-        let mut store = KvStore::new(MAX_LOG_FILE_SIZE.with(|f| *f));
+        let path = path.into();
+        let store_config = StoreConfig {
+            log_location: path.clone(),
+            keydir_location: path.join(KEYDIR_NAME),
+            max_log_file_size: MAX_LOG_FILE_SIZE.with(|f| *f),
+        };
+        debug!("Using keydir at {}", store_config.keydir_location.display());
+
+        let mut store = KvStore::new(store_config);
         let log_level = std::env::var("KVS_LOG").unwrap_or("info".to_string());
         store.setup_logging(log_level)?;
         store.load()?;
-
-        let path = path.into();
-        let keydir_path = path.join(KEYDIR_NAME);
-        debug!("Using keydir at {}", keydir_path.display());
-
-        store.log_location = path.clone();
-        store.keydir_location = keydir_path;
 
         debug!("Creating initial log file");
         store.writer.write().unwrap().active_log_handle =
