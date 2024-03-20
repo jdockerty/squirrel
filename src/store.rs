@@ -267,52 +267,53 @@ impl KvStore {
     }
 
     fn load(&self) -> Result<()> {
-        let log_files = match glob("kvs*.log") {
-            Ok(files) => files,
+        let dir = &format!("{}/kvs*.log", self.log_location.display());
+        debug!(glob_pattern = dir, "Searching for log files");
+        match glob(dir) {
+            Ok(files) => {
+                info!("Rebuilding keydir");
+                files.for_each(|file| {
+                    let file = file.unwrap();
+                    info!(file = ?file.display(), "Reading log file");
+                    let f = File::open(&file).unwrap();
+                    let file_size = f.metadata().unwrap().len();
+
+                    if file_size == 0 {
+                        info!("Skipping empty log file");
+                        return;
+                    }
+                    let mut reader = BufReaderWithOffset::new(f);
+                    loop {
+                        let pos = reader.offset();
+                        if file_size as usize == pos {
+                            break;
+                        }
+                        info!(position = pos);
+                        let entry: LogEntry = bincode::deserialize_from(&mut reader).unwrap();
+                        info!(?entry);
+                        match entry.operation {
+                            Operation::Set => {
+                                let key = entry.key.clone();
+                                let keydir_entry = KeydirEntry {
+                                    file_id: file.clone(),
+                                    offset: pos,
+                                    timestamp: entry.timestamp,
+                                };
+                                self.keydir.insert(key, keydir_entry);
+                            }
+                            Operation::Remove => {
+                                self.keydir.remove(&entry.key);
+                            }
+                            Operation::Get => {}
+                        }
+                    }
+                });
+            }
             Err(e) => {
                 warn!("No log files found: {}", e);
                 return Ok(());
             }
         };
-        info!("Rebuilding keydir");
-
-        log_files.for_each(|file| {
-            let file = file.unwrap();
-            info!(file = ?file.display(), "Reading log file");
-            let f = File::open(&file).unwrap();
-            let file_size = f.metadata().unwrap().len();
-
-            if file_size == 0 {
-                info!("Skipping empty log file");
-                return;
-            }
-            let mut reader = BufReaderWithOffset::new(f);
-            loop {
-                let pos = reader.offset();
-                if file_size as usize == pos {
-                    break;
-                }
-                info!(position = pos);
-                let entry: LogEntry = bincode::deserialize_from(&mut reader).unwrap();
-                info!(?entry);
-                match entry.operation {
-                    Operation::Set => {
-                        let key = entry.key.clone();
-                        let keydir_entry = KeydirEntry {
-                            file_id: file.clone(),
-                            offset: pos,
-                            timestamp: entry.timestamp,
-                        };
-                        self.keydir.insert(key, keydir_entry);
-                    }
-                    Operation::Remove => {
-                        self.keydir.remove(&entry.key);
-                    }
-                    Operation::Get => {}
-                }
-            }
-        });
-
         Ok(())
     }
 
