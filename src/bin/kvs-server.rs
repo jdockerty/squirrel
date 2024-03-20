@@ -76,8 +76,7 @@ fn main() -> anyhow::Result<()> {
 
     while let Ok((mut stream, _)) = listener.accept() {
         debug!("Connection established: {stream:?}");
-        let kv = kv.clone();
-        pool.spawn(move || {
+        pool.scope(|_| {
             // We know the actions that a client can take, so we can encode and decode them
             // to know what action we should take.
             let action: Action = bincode::deserialize_from(&stream).unwrap();
