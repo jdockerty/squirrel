@@ -128,7 +128,6 @@ impl KvsEngine for KvStore {
             timestamp,
         };
         self.keydir.insert(key, entry);
-        // Retrieve the new value without having to load the atomic value again.
         if pos as u64 > self.max_log_file_size {
             debug!(
                 current_size = pos,
