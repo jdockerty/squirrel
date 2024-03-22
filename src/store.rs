@@ -25,7 +25,7 @@ pub enum Operation {
 
 #[derive(Clone, Debug)]
 pub struct StoreWriter {
-    active_log_file: Arc<RwLock<PathBuf>>,
+    active_log_file: PathBuf,
     active_log_handle: Option<Arc<RwLock<File>>>,
     position: Arc<AtomicUsize>,
 }
@@ -33,7 +33,7 @@ pub struct StoreWriter {
 impl Default for StoreWriter {
     fn default() -> Self {
         StoreWriter {
-            active_log_file: Arc::new(RwLock::new(PathBuf::default())),
+            active_log_file: PathBuf::default(),
             active_log_handle: None,
             position: Arc::new(AtomicUsize::new(0)),
         }
@@ -43,6 +43,7 @@ impl Default for StoreWriter {
 /// An in-memory key-value store inspired by Bitcask.
 #[derive(Clone, Debug)]
 pub struct KvStore {
+    /// Writer allows for concurrent writes to the current active log file.
     pub writer: Arc<RwLock<StoreWriter>>,
 
     /// Directory where the log files are stored.
@@ -116,22 +117,13 @@ impl KvsEngine for KvStore {
                 .read()
                 .unwrap()
                 .active_log_file
-                .read()
-                .unwrap()
                 .display()
                 .to_string(),
             "Appended to log"
         );
 
         let entry = KeydirEntry {
-            file_id: self
-                .writer
-                .read()
-                .unwrap()
-                .active_log_file
-                .read()
-                .unwrap()
-                .clone(),
+            file_id: self.writer.read().unwrap().active_log_file.clone(),
             offset: pos,
             timestamp,
         };
@@ -141,15 +133,7 @@ impl KvsEngine for KvStore {
             debug!(
                 current_size = pos,
                 max_log_file_size = self.max_log_file_size,
-                active_file = self
-                    .writer
-                    .read()
-                    .unwrap()
-                    .active_log_file
-                    .read()
-                    .unwrap()
-                    .display()
-                    .to_string(),
+                active_file = ?self.writer.read().unwrap().active_log_file.display(),
                 "Compaction required"
             );
             self.compact()?;
@@ -335,8 +319,7 @@ impl KvStore {
             .create(true)
             .append(true)
             .open(&next_log_file_name)?;
-        self.writer.write().unwrap().active_log_file =
-            Arc::new(RwLock::new(PathBuf::from(next_log_file_name.clone())));
+        self.writer.write().unwrap().active_log_file = PathBuf::from(next_log_file_name.clone());
         debug!(active_file = next_log_file_name, "Created new log file");
         self.writer
             .write()
