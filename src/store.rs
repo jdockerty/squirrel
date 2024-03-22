@@ -166,14 +166,7 @@ impl KvsEngine for KvStore {
                 debug!(
                     key = key,
                     offset = entry.offset,
-                    "entry exists in {}",
-                    self.writer
-                        .read()
-                        .unwrap()
-                        .active_log_file
-                        .read()
-                        .unwrap()
-                        .display(),
+                    file = ?entry.file_id,
                 );
 
                 let mut entry_file = std::fs::File::open(&entry.file_id)?;
