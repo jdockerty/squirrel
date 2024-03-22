@@ -112,13 +112,7 @@ impl KvsEngine for KvStore {
         let pos = self.append_to_log(&entry)?;
         debug!(
             position = pos,
-            active_file = self
-                .writer
-                .read()
-                .unwrap()
-                .active_log_file
-                .display()
-                .to_string(),
+            active_file = ?self.writer.read().unwrap().active_log_file.display(),
             "Appended to log"
         );
 
