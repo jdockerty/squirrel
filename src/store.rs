@@ -52,6 +52,7 @@ impl Default for StoreWriter {
 pub struct KvStore {
     pub writer: Arc<RwLock<StoreWriter>>,
 
+    /// Directory where the log files are stored.
     pub log_location: PathBuf,
 
     /// Keydir maps key entries in the log to their offset in the log file.
