@@ -26,24 +26,17 @@ pub enum Operation {
 #[derive(Clone, Debug)]
 pub struct StoreWriter {
     active_log_file: Arc<RwLock<PathBuf>>,
-    // TODO: can we hold BufWriter's here?
     active_log_handle: Option<Arc<RwLock<File>>>,
     position: Arc<AtomicUsize>,
 }
 
-impl StoreWriter {
-    pub fn new() -> StoreWriter {
+impl Default for StoreWriter {
+    fn default() -> Self {
         StoreWriter {
             active_log_file: Arc::new(RwLock::new(PathBuf::default())),
             active_log_handle: None,
             position: Arc::new(AtomicUsize::new(0)),
         }
-    }
-}
-
-impl Default for StoreWriter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
