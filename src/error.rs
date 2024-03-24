@@ -1,10 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("I/O error on file {filename}: {source}")]
-    IoError {
-        source: std::io::Error,
-        filename: String,
-    },
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
 
     #[error("Get operation was stored in the log")]
     GetOperationInLog,
@@ -29,4 +26,7 @@ pub enum Error {
 
     #[error("Unable to setup tracing: {0}")]
     TracingError(#[from] tracing::subscriber::SetGlobalDefaultError),
+
+    #[error("An internal error occurred: {0}")]
+    InternalError(#[from] anyhow::Error),
 }
