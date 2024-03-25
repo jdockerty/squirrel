@@ -25,25 +25,18 @@ pub enum Operation {
 
 #[derive(Clone, Debug)]
 pub struct StoreWriter {
-    active_log_file: Arc<RwLock<PathBuf>>,
-    // TODO: can we hold BufWriter's here?
+    active_log_file: PathBuf,
     active_log_handle: Option<Arc<RwLock<File>>>,
     position: Arc<AtomicUsize>,
 }
 
-impl StoreWriter {
-    pub fn new() -> StoreWriter {
+impl Default for StoreWriter {
+    fn default() -> Self {
         StoreWriter {
-            active_log_file: Arc::new(RwLock::new(PathBuf::default())),
+            active_log_file: PathBuf::default(),
             active_log_handle: None,
             position: Arc::new(AtomicUsize::new(0)),
         }
-    }
-}
-
-impl Default for StoreWriter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -111,45 +104,21 @@ impl KvsEngine for KvStore {
         let pos = self.append_to_log(&entry)?;
         debug!(
             position = pos,
-            active_file = self
-                .writer
-                .read()
-                .unwrap()
-                .active_log_file
-                .read()
-                .unwrap()
-                .display()
-                .to_string(),
+            active_file = ?self.writer.read().unwrap().active_log_file.display(),
             "Appended to log"
         );
 
         let entry = KeydirEntry {
-            file_id: self
-                .writer
-                .read()
-                .unwrap()
-                .active_log_file
-                .read()
-                .unwrap()
-                .clone(),
+            file_id: self.writer.read().unwrap().active_log_file.clone(),
             offset: pos,
             timestamp,
         };
         self.keydir.insert(key, entry);
-        // Retrieve the new value without having to load the atomic value again.
         if pos as u64 > self.max_log_file_size {
             debug!(
                 current_size = pos,
                 max_log_file_size = self.max_log_file_size,
-                active_file = self
-                    .writer
-                    .read()
-                    .unwrap()
-                    .active_log_file
-                    .read()
-                    .unwrap()
-                    .display()
-                    .to_string(),
+                active_file = ?self.writer.read().unwrap().active_log_file.display(),
                 "Compaction required"
             );
             self.compact()?;
@@ -167,13 +136,7 @@ impl KvsEngine for KvStore {
                     key = key,
                     offset = entry.offset,
                     "entry exists in {}",
-                    self.writer
-                        .read()
-                        .unwrap()
-                        .active_log_file
-                        .read()
-                        .unwrap()
-                        .display(),
+                    entry.file_id.display(),
                 );
 
                 let mut entry_file = std::fs::File::open(&entry.file_id)?;
@@ -338,8 +301,7 @@ impl KvStore {
             .create(true)
             .append(true)
             .open(&next_log_file_name)?;
-        self.writer.write().unwrap().active_log_file =
-            Arc::new(RwLock::new(PathBuf::from(next_log_file_name.clone())));
+        self.writer.write().unwrap().active_log_file = PathBuf::from(next_log_file_name.clone());
         debug!(active_file = next_log_file_name, "Created new log file");
         self.writer
             .write()
