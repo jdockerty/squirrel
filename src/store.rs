@@ -1,6 +1,6 @@
 use crate::engine::KvsEngine;
 use crate::{KvStoreError, Result};
-use crate::{KEYDIR_NAME, LOG_PREFIX, MAX_LOG_FILE_SIZE};
+use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use glob::glob;
 use serde::{Deserialize, Serialize};
@@ -55,17 +55,11 @@ pub struct KvStore {
     /// Directory where the log files are stored.
     pub log_location: PathBuf,
 
-    /// Keydir maps key entries in the log to their offset in the log file.
-    /// The byte offset is used to seek to the correct position in the log file.
-    keydir_location: PathBuf,
-
     /// Keydir is an in-memory map of keys to their respective log file, which
     /// contains the offset to the entry in the log file.
     ///
     /// This uses [`DashMap`] to allow for concurrent reads and writes.
     keydir: Arc<DashMap<String, KeydirEntry>>,
-
-    keydir_handle: Option<Arc<RwLock<File>>>,
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
@@ -99,7 +93,6 @@ struct KeydirEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoreConfig {
     log_location: PathBuf,
-    keydir_location: PathBuf,
     max_log_file_size: u64,
 }
 
@@ -234,9 +227,7 @@ impl KvStore {
         KvStore {
             writer: Arc::new(RwLock::new(StoreWriter::default())),
             log_location: config.log_location,
-            keydir_location: config.keydir_location,
             keydir: Arc::new(DashMap::new()),
-            keydir_handle: None,
             max_log_file_size: config.max_log_file_size,
             _tracing: None,
         }
@@ -250,10 +241,9 @@ impl KvStore {
         let path = path.into();
         let store_config = StoreConfig {
             log_location: path.clone(),
-            keydir_location: path.join(KEYDIR_NAME),
             max_log_file_size: MAX_LOG_FILE_SIZE.with(|f| *f),
         };
-        debug!("Using keydir at {}", store_config.keydir_location.display());
+        info!(compaction_trigger = store_config.max_log_file_size);
 
         let mut store = KvStore::new(store_config);
         let log_level = std::env::var("KVS_LOG").unwrap_or("info".to_string());
@@ -263,7 +253,6 @@ impl KvStore {
         debug!("Creating initial log file");
         store.writer.write().unwrap().active_log_handle =
             Some(Arc::new(RwLock::new(store.create_log_file()?)));
-        store.set_keydir_handle()?;
         Ok(store)
     }
 
@@ -462,17 +451,6 @@ impl KvStore {
     fn set_active_log_handle(&self) -> Result<()> {
         self.writer.write().unwrap().active_log_handle =
             Some(Arc::new(RwLock::new(self.create_log_file()?)));
-        Ok(())
-    }
-
-    fn set_keydir_handle(&mut self) -> Result<()> {
-        let keydir_file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true) // To enable creation in the case where the file doesn't exist.
-            .create(true)
-            .open(self.keydir_location.as_path())?;
-
-        self.keydir_handle = Some(Arc::new(RwLock::new(keydir_file)));
         Ok(())
     }
 

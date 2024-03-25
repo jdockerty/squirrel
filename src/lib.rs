@@ -7,7 +7,6 @@ pub use error::Error as KvStoreError;
 pub use store::KvStore;
 
 pub const LOG_PREFIX: &str = "kvs";
-pub const KEYDIR_NAME: &str = "kvs-keydir";
 pub const ENGINE_FILE: &str = ".engine";
 
 // The maximum size of a log file before it should be compacted.
