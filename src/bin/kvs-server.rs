@@ -63,35 +63,62 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(app.addr).await?;
     info!("listening on {}", app.addr);
 
-    while let Ok((mut stream, _)) = listener.accept().await {
+    while let Ok((stream, _)) = listener.accept().await {
         debug!("Connection established: {stream:?}");
-        let kv = kv.clone();
-        tokio::spawn(async move {
-            let mut buf = Vec::new();
-            stream.read_to_end(&mut buf).await.unwrap();
+        tokio::select! {
+            _ = handle_connection(stream, kv.clone()) => {}
+        }
+    }
+    Ok(())
+}
+
+async fn handle_connection(mut stream: tokio::net::TcpStream, kv: KvStore) -> anyhow::Result<()> {
+    let mut buf = Vec::new();
+    match stream.read_u8().await? {
+        // Set
+        0 => {
             // We know the actions that a client can take, so we can encode and decode them
             // to know what action we should take.
             let action: Action = bincode::deserialize_from(&*buf).unwrap();
             debug!("Received action: {action:?}");
-
-            match &action {
+            match action {
                 Action::Set { key, value } => {
                     match kv.set(key.to_string(), value.to_string()).await {
                         Ok(_) => debug!("{key} set to {value}"),
                         Err(e) => error!("{}", e),
-                    }
+                    };
                 }
-                Action::Get { key } => match kv.get(key.to_string()).await {
+                _ => {}
+            }
+        }
+        // Get
+        1 => {
+            let action: Action = bincode::deserialize_from(&*buf).unwrap();
+            debug!("Received action: {action:?}");
+            match action {
+                Action::Set { key, value } => match kv.get(key.to_string()).await {
                     Ok(Some(value)) => {
                         debug!("{key} has value: {value}");
-                        stream.write_all(value.as_bytes()).await.unwrap();
+                        stream.write_u8(1).await?;
+                        stream.flush().await?;
+                        stream.write(value.as_bytes()).await?;
+                        stream.flush().await?;
                     }
                     Ok(None) => {
                         debug!("{key} not found");
+                        stream.write_u8(0).await?;
                         stream.write_all("Key not found".as_bytes()).await.unwrap();
                     }
                     Err(e) => error!("{}", e),
                 },
+                _ => {}
+            }
+        }
+        // Remove
+        2 => {
+            let action: Action = bincode::deserialize_from(&*buf).unwrap();
+            debug!("Received action: {action:?}");
+            match action {
                 Action::Remove { key } => match kv.remove(key.to_string()).await {
                     Ok(_) => debug!("{key} removed"),
                     Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
@@ -100,8 +127,12 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => error!("{}", e),
                 },
+                _ => {}
             }
-        });
+        }
+        // Unimplemented
+        _ => {}
     }
+
     Ok(())
 }

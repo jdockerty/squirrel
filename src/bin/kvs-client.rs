@@ -28,8 +28,16 @@ async fn main() -> anyhow::Result<()> {
             let mut stream = TcpStream::connect(cli.server).await?;
             let data = bincode::serialize(&Action::Get { key })?;
             stream.write_all(&data).await?;
-            stream.read_to_string(&mut response).await?;
-            println!("{}", response);
+            match stream.read_u8().await? {
+                0 => {
+                    eprintln!("Key not found");
+                    std::process::exit(1);
+                }
+                _ => {
+                    let response = Vec::new();
+                    println!("{}", String::from_utf8(response)?);
+                }
+            }
         }
         Action::Remove { key } => {
             let mut stream = TcpStream::connect(cli.server).await?;
