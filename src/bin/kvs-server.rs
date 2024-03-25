@@ -4,12 +4,11 @@ use kvs::KvStore;
 use kvs::KvsEngine;
 use kvs::ENGINE_FILE;
 use rayon::ThreadPoolBuilder;
-use std::io::Write;
 use std::{ffi::OsString, path::PathBuf};
-use std::{
-    fmt::Display,
-    net::{SocketAddr, TcpListener},
-};
+use std::{fmt::Display, net::SocketAddr};
+use tokio::io::AsyncRead;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Parser)]
@@ -49,7 +48,8 @@ impl Display for Engine {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let app = App::parse();
 
     // We must error if the previous storage engine was not 'kvs' as it is incompatible.
@@ -62,44 +62,48 @@ fn main() -> anyhow::Result<()> {
         app.engine_name
     );
 
-    let listener = TcpListener::bind(app.addr)?;
+    let listener = TcpListener::bind(app.addr).await?;
     info!("listening on {}", app.addr);
-    let pool = ThreadPoolBuilder::new().build()?;
 
-    while let Ok((mut stream, _)) = listener.accept() {
+    while let Ok((mut stream, _)) = listener.accept().await {
         debug!("Connection established: {stream:?}");
-        pool.scope(|_| {
+        let kv = kv.clone();
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            stream.read_to_end(&mut buf).await.unwrap();
             // We know the actions that a client can take, so we can encode and decode them
             // to know what action we should take.
-            let action: Action = bincode::deserialize_from(&stream).unwrap();
+            let action: Action = bincode::deserialize_from(&*buf).unwrap();
             debug!("Received action: {action:?}");
 
             match &action {
-                Action::Set { key, value } => match kv.set(key.to_string(), value.to_string()) {
-                    Ok(_) => debug!("{key} set to {value}"),
-                    Err(e) => error!("{}", e),
-                },
-                Action::Get { key } => match kv.get(key.to_string()) {
+                Action::Set { key, value } => {
+                    match kv.set(key.to_string(), value.to_string()).await {
+                        Ok(_) => debug!("{key} set to {value}"),
+                        Err(e) => error!("{}", e),
+                    }
+                }
+                Action::Get { key } => match kv.get(key.to_string()).await {
                     Ok(Some(value)) => {
                         debug!("{key} has value: {value}");
-                        write!(stream, "{}", value).unwrap();
+                        stream.write_all(value.as_bytes()).await.unwrap();
                     }
                     Ok(None) => {
                         debug!("{key} not found");
-                        write!(stream, "Key not found").unwrap();
+                        stream.write_all("Key not found".as_bytes()).await.unwrap();
                     }
                     Err(e) => error!("{}", e),
                 },
-                Action::Remove { key } => match kv.remove(key.to_string()) {
+                Action::Remove { key } => match kv.remove(key.to_string()).await {
                     Ok(_) => debug!("{key} removed"),
                     Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
                         debug!("{key} not found");
-                        write!(stream, "Key not found").unwrap();
+                        stream.write_all("Key not found".as_bytes()).await.unwrap();
                     }
                     Err(e) => error!("{}", e),
                 },
             }
-        })
+        });
     }
     Ok(())
 }

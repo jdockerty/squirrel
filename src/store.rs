@@ -98,7 +98,7 @@ struct StoreConfig {
 
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
-    fn set(&self, key: String, value: String) -> Result<()> {
+    async fn set(&self, key: String, value: String) -> Result<()> {
         debug!(key, value, "Setting key");
         let timestamp = chrono::Utc::now().timestamp();
         let entry = LogEntry {
@@ -159,7 +159,7 @@ impl KvsEngine for KvStore {
 
     /// Retrieve the value of a key from the store.
     /// If the key does not exist, then [`None`] is returned.
-    fn get(&self, key: String) -> Result<Option<String>> {
+    async fn get(&self, key: String) -> Result<Option<String>> {
         debug!(key, "Getting key");
         match self.keydir.get(&key) {
             Some(entry) => {
@@ -191,7 +191,7 @@ impl KvsEngine for KvStore {
     }
 
     /// Remove a key from the store.
-    fn remove(&self, key: String) -> Result<()> {
+    async fn remove(&self, key: String) -> Result<()> {
         match self.keydir.remove(&key) {
             Some(_entry) => {
                 let tombstone = LogEntry {
