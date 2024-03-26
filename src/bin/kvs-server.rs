@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     // We must error if the previous storage engine was not 'kvs' as it is incompatible.
     KvStore::engine_is_kvs(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
-    let kv = KvStore::open(app.log_file)?;
+    let kv = std::sync::Arc::new(KvStore::open(app.log_file)?);
 
     info!(
         "kvs-server version: {}, engine: {}",
@@ -72,66 +72,54 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_connection(mut stream: tokio::net::TcpStream, kv: KvStore) -> anyhow::Result<()> {
-    let mut buf = Vec::new();
-    match stream.read_u8().await? {
-        // Set
-        0 => {
-            // We know the actions that a client can take, so we can encode and decode them
-            // to know what action we should take.
-            let action: Action = bincode::deserialize_from(&*buf).unwrap();
+async fn handle_connection(
+    mut stream: tokio::net::TcpStream,
+    kv: std::sync::Arc<KvStore>,
+) -> anyhow::Result<()> {
+    // The client provides a size hint for how much data is incoming first.
+    // This allows us to use read_exact.
+    let size = stream.read_u64().await? as usize;
+    let mut buf = vec![0; size];
+    stream.read_exact(&mut buf).await?;
+    let action: Action = bincode::deserialize_from(buf.as_slice()).unwrap();
+
+    match &action {
+        Action::Set { key, value } => {
             debug!("Received action: {action:?}");
-            match action {
-                Action::Set { key, value } => {
-                    match kv.set(key.to_string(), value.to_string()).await {
-                        Ok(_) => debug!("{key} set to {value}"),
-                        Err(e) => error!("{}", e),
-                    };
+            match kv.set(key.to_string(), value.to_string()).await {
+                Ok(_) => debug!("{key} set to {value}"),
+                Err(e) => error!("{}", e),
+            };
+        }
+        Action::Get { key } => {
+            debug!("Received action: {action:?}");
+            match kv.get(key.to_string()).await {
+                Ok(Some(value)) => {
+                    debug!("{key} has value: {value}");
+                    stream.write_u8(1).await?;
+                    stream.flush().await?;
+                    stream.write_all(value.as_bytes()).await?;
+                    stream.flush().await?;
                 }
-                _ => {}
+                Ok(None) => {
+                    debug!("{key} not found");
+                    stream.write_u8(0).await?;
+                    stream.write_all("Key not found".as_bytes()).await.unwrap();
+                }
+                Err(e) => error!("{}", e),
             }
         }
-        // Get
-        1 => {
-            let action: Action = bincode::deserialize_from(&*buf).unwrap();
+        Action::Remove { key } => {
             debug!("Received action: {action:?}");
-            match action {
-                Action::Set { key, value } => match kv.get(key.to_string()).await {
-                    Ok(Some(value)) => {
-                        debug!("{key} has value: {value}");
-                        stream.write_u8(1).await?;
-                        stream.flush().await?;
-                        stream.write(value.as_bytes()).await?;
-                        stream.flush().await?;
-                    }
-                    Ok(None) => {
-                        debug!("{key} not found");
-                        stream.write_u8(0).await?;
-                        stream.write_all("Key not found".as_bytes()).await.unwrap();
-                    }
-                    Err(e) => error!("{}", e),
-                },
-                _ => {}
+            match kv.remove(key.to_string()).await {
+                Ok(_) => debug!("{key} removed"),
+                Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
+                    debug!("{key} not found");
+                    stream.write_all("Key not found".as_bytes()).await.unwrap();
+                }
+                Err(e) => error!("{}", e),
             }
         }
-        // Remove
-        2 => {
-            let action: Action = bincode::deserialize_from(&*buf).unwrap();
-            debug!("Received action: {action:?}");
-            match action {
-                Action::Remove { key } => match kv.remove(key.to_string()).await {
-                    Ok(_) => debug!("{key} removed"),
-                    Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
-                        debug!("{key} not found");
-                        stream.write_all("Key not found".as_bytes()).await.unwrap();
-                    }
-                    Err(e) => error!("{}", e),
-                },
-                _ => {}
-            }
-        }
-        // Unimplemented
-        _ => {}
     }
 
     Ok(())
