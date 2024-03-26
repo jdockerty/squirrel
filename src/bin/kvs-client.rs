@@ -40,13 +40,8 @@ async fn main() -> anyhow::Result<()> {
             serialize_and_hint!(stream, Action::Get { key });
             stream.read_to_string(&mut response).await?;
             match response.as_str() {
-                "Key not found" => {
-                    eprintln!("{}", response);
-                    std::process::exit(1);
-                }
-                _ => {
-                    println!("{}", response);
-                }
+                "Key not found" => println!("{}", response),
+                _ => println!("{}", response),
             }
         }
         Action::Remove { key } => {

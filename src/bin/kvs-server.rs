@@ -85,41 +85,33 @@ async fn handle_connection(
 
     match &action {
         Action::Set { key, value } => {
-            debug!("Received action: {action:?}");
             match kv.set(key.to_string(), value.to_string()).await {
                 Ok(_) => debug!("{key} set to {value}"),
                 Err(e) => error!("{}", e),
             };
         }
-        Action::Get { key } => {
-            debug!("Received action: {action:?}");
-            match kv.get(key.to_string()).await {
-                Ok(Some(value)) => {
-                    debug!("{key} has value: {value}");
-                    stream.write_u8(1).await?;
-                    stream.flush().await?;
-                    stream.write_all(value.as_bytes()).await?;
-                    stream.flush().await?;
-                }
-                Ok(None) => {
-                    debug!("{key} not found");
-                    stream.write_u8(0).await?;
-                    stream.write_all("Key not found".as_bytes()).await.unwrap();
-                }
-                Err(e) => error!("{}", e),
+        Action::Get { key } => match kv.get(key.to_string()).await {
+            Ok(Some(value)) => {
+                debug!("{key} has value: {value}");
+                stream.write_all(value.as_bytes()).await?;
+                stream.flush().await?;
             }
-        }
-        Action::Remove { key } => {
-            debug!("Received action: {action:?}");
-            match kv.remove(key.to_string()).await {
-                Ok(_) => debug!("{key} removed"),
-                Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
-                    debug!("{key} not found");
-                    stream.write_all("Key not found".as_bytes()).await.unwrap();
-                }
-                Err(e) => error!("{}", e),
+            Ok(None) => {
+                debug!("{key} not found");
+                stream.write_all("Key not found".as_bytes()).await?;
+                stream.flush().await?;
             }
-        }
+            Err(e) => error!("{}", e),
+        },
+        Action::Remove { key } => match kv.remove(key.to_string()).await {
+            Ok(_) => debug!("{key} removed"),
+            Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
+                debug!("{key} not found");
+                stream.write_all("Key not found".as_bytes()).await?;
+                stream.flush().await?;
+            }
+            Err(e) => error!("{}", e),
+        },
     }
 
     Ok(())
