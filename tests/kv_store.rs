@@ -1,7 +1,7 @@
 use kvs::{KvStore, KvsEngine, Result};
-use std::sync::{Arc, Barrier};
-use std::thread;
+use std::sync::Arc;
 use tempfile::TempDir;
+use tokio::sync::Barrier;
 use walkdir::WalkDir;
 
 // Should get previously stored value
@@ -151,87 +151,93 @@ async fn compaction() -> Result<()> {
     panic!("No compaction detected");
 }
 
-//#[tokio::test]
-//async fn concurrent_set() -> Result<()> {
-//    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-//    let store = KvStore::open(temp_dir.path())?;
-//    let barrier = Arc::new(Barrier::new(1001));
-//    for i in 0..1000 {
-//        let store = store.clone();
-//        let barrier = barrier.clone();
-//        tokio::spawn(async move {
-//            store
-//                .set(format!("key{}", i), format!("value{}", i))
-//                .await
-//                .unwrap();
-//            barrier.wait();
-//        });
-//    }
-//    barrier.wait();
-//
-//    for i in 0..1000 {
-//        assert_eq!(store.get(format!("key{}", i)).await?, Some(format!("value{}", i)));
-//    }
-//
-//    // Open from disk again and check persistent data
-//    drop(store);
-//    let store = KvStore::open(temp_dir.path())?;
-//    for i in 0..1000 {
-//        assert_eq!(store.get(format!("key{}", i)).await?, Some(format!("value{}", i)));
-//    }
-//
-//    Ok(())
-//}
+#[tokio::test]
+async fn concurrent_set() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let store = KvStore::open(temp_dir.path())?;
+    let barrier = Arc::new(Barrier::new(1001));
+    for i in 0..1000 {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tokio::spawn(async move {
+            store
+                .set(format!("key{}", i), format!("value{}", i))
+                .await
+                .unwrap();
+            barrier.wait().await;
+        });
+    }
+    barrier.wait().await;
 
-//#[test]
-//fn concurrent_get() -> Result<()> {
-//    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-//    let store = KvStore::open(temp_dir.path())?;
-//    for i in 0..100 {
-//        store
-//            .set(format!("key{}", i), format!("value{}", i))
-//            .await
-//            .unwrap();
-//    }
-//
-//    let mut handles = Vec::new();
-//    for thread_id in 0..100 {
-//        let store = store.clone();
-//        let handle = thread::spawn(move || {
-//            for i in 0..100 {
-//                let key_id = (i + thread_id) % 100;
-//                assert_eq!(
-//                    store.get(format!("key{}", key_id)).unwrap(),
-//                    Some(format!("value{}", key_id))
-//                );
-//            }
-//        });
-//        handles.push(handle);
-//    }
-//    for handle in handles {
-//        handle.join().unwrap();
-//    }
-//
-//    // Open from disk again and check persistent data
-//    drop(store);
-//    let store = KvStore::open(temp_dir.path())?;
-//    let mut handles = Vec::new();
-//    for thread_id in 0..100 {
-//        let store = store.clone();
-//        let handle = thread::spawn(move || {
-//            for i in 0..100 {
-//                let key_id = (i + thread_id) % 100;
-//                assert_eq!(
-//                    store.get(format!("key{}", key_id)).unwrap(),
-//                    Some(format!("value{}", key_id))
-//                );
-//            }
-//        });
-//        handles.push(handle);
-//    }
-//    for handle in handles {
-//        handle.join().unwrap();
-//    }
-//
-//    Ok(())
-//}
+    for i in 0..1000 {
+        assert_eq!(
+            store.get(format!("key{}", i)).await.unwrap(),
+            Some(format!("value{}", i))
+        );
+    }
+
+    // Open from disk again and check persistent data
+    drop(store);
+    let store = KvStore::open(temp_dir.path())?;
+    for i in 0..1000 {
+        assert_eq!(
+            store.get(format!("key{}", i)).await.unwrap(),
+            Some(format!("value{}", i))
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_get() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let store = KvStore::open(temp_dir.path())?;
+    for i in 0..100 {
+        store
+            .set(format!("key{}", i), format!("value{}", i))
+            .await
+            .unwrap();
+    }
+
+    let mut handles = Vec::new();
+    for thread_id in 0..100 {
+        let store = store.clone();
+        let handle = tokio::task::spawn(async move {
+            for i in 0..100 {
+                let key_id = (i + thread_id) % 100;
+                assert_eq!(
+                    store.get(format!("key{}", key_id)).await.unwrap(),
+                    Some(format!("value{}", key_id))
+                );
+            }
+        });
+        handles.push(handle);
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // Open from disk again and check persistent data
+    drop(store);
+    let store = KvStore::open(temp_dir.path())?;
+    let mut handles = Vec::new();
+    for thread_id in 0..100 {
+        let store = store.clone();
+        let handle = tokio::task::spawn(async move {
+            for i in 0..100 {
+                let key_id = (i + thread_id) % 100;
+                assert_eq!(
+                    store.get(format!("key{}", key_id)).await.unwrap(),
+                    Some(format!("value{}", key_id))
+                );
+            }
+        });
+        handles.push(handle);
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    Ok(())
+}
