@@ -1,5 +1,6 @@
 use kvs::{KvStore, KvsEngine, Result};
-use std::sync::Arc;
+use rand::Rng;
+use std::{collections::HashMap, sync::Arc};
 use tempfile::TempDir;
 use tokio::sync::Barrier;
 use walkdir::WalkDir;
@@ -149,6 +150,50 @@ async fn compaction() -> Result<()> {
     }
 
     panic!("No compaction detected");
+}
+
+// Ensure that we can conduct random operations and retrieve the correct values.
+// As opposed to always setting sequential keys and values.
+#[tokio::test]
+async fn randomised_retrieval() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let store = KvStore::open(temp_dir.path())?;
+
+    let mut value_tracker = HashMap::new();
+    let mut rng = rand::thread_rng();
+    for i in 0..1000 {
+        let key = format!("key{}", i);
+        let value = format!("value{}", i);
+
+        // Always set some random keys on every iteration
+        for _ in 0..100 {
+            store
+                .set(key.clone(), format!("value{}", rng.gen::<i32>()))
+                .await?;
+        }
+
+        if rng.gen::<usize>() % 2 == 0 {
+            store.set(key.clone(), value.clone()).await?;
+            value_tracker.insert(key.clone(), value.clone());
+        } else {
+            match store.remove(key.clone()).await {
+                Ok(_) => {
+                    value_tracker.remove(&key);
+                }
+                Err(e) if matches!(e, kvs::KvStoreError::RemoveOperationWithNoKey) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    drop(store);
+
+    let store = KvStore::open(temp_dir.path())?;
+
+    for (k, v) in value_tracker {
+        assert_eq!(store.get(k).await?, Some(v));
+    }
+
+    Ok(())
 }
 
 #[tokio::test]
