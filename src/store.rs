@@ -433,7 +433,7 @@ impl KvStore {
         Ok(())
     }
 
-    pub fn setup_logging(&mut self, level: String) -> anyhow::Result<()> {
+    pub(crate) fn setup_logging(&mut self, level: String) -> anyhow::Result<()> {
         let level = LevelFilter::from_str(&level)?;
         let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
         let subscriber = tracing_subscriber::registry().with(level).with(layer);
