@@ -295,10 +295,7 @@ impl KvStore {
     }
 
     fn next_log_file_name(&self) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
+        let now = chrono::Utc::now().timestamp_millis();
         format!(
             "{}{}.log",
             self.log_location.join(LOG_PREFIX).display(),
