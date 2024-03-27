@@ -214,8 +214,7 @@ impl KvStore {
         store.load()?;
 
         debug!("Creating initial log file");
-        store.writer.write().unwrap().active_log_handle =
-            Some(Arc::new(RwLock::new(store.create_log_file()?)));
+        store.set_active_log_handle()?;
         Ok(store)
     }
 
@@ -293,22 +292,6 @@ impl KvStore {
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
         Ok(pos)
-    }
-
-    fn create_log_file(&self) -> Result<File> {
-        let next_log_file_name = self.next_log_file_name();
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&next_log_file_name)?;
-        self.writer.write().unwrap().active_log_file = PathBuf::from(next_log_file_name.clone());
-        debug!(active_file = next_log_file_name, "Created new log file");
-        self.writer
-            .write()
-            .unwrap()
-            .position
-            .store(0, std::sync::atomic::Ordering::SeqCst);
-        Ok(log_file)
     }
 
     fn next_log_file_name(&self) -> String {
@@ -410,9 +393,22 @@ impl KvStore {
         Ok(())
     }
 
-    fn set_active_log_handle(&self) -> Result<()> {
-        self.writer.write().unwrap().active_log_handle =
-            Some(Arc::new(RwLock::new(self.create_log_file()?)));
+    pub(crate) fn set_active_log_handle(&self) -> Result<()> {
+        let mut writer = self.writer.write().unwrap();
+        let next_log_file_name = self.next_log_file_name();
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&next_log_file_name)?;
+        debug!(active_file = next_log_file_name, "Created new log file");
+        writer.active_log_file = PathBuf::from(next_log_file_name.clone());
+        debug!("Set active file");
+        writer
+            .position
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        debug!("Store pos");
+        writer.active_log_handle = Some(Arc::new(RwLock::new(log_file)));
+        debug!("active handle set");
         Ok(())
     }
 
