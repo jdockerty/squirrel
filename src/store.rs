@@ -159,6 +159,7 @@ impl KvsEngine for KvStore {
 
     /// Remove a key from the store.
     async fn remove(&self, key: String) -> Result<()> {
+        debug!(key, "Removing key");
         match self.keydir.remove(&key) {
             Some(_entry) => {
                 let tombstone = LogEntry {
@@ -175,9 +176,20 @@ impl KvsEngine for KvStore {
                     .position
                     .load(std::sync::atomic::Ordering::SeqCst);
                 self.append_to_log(&tombstone)?;
+                debug!(
+                    position = pos,
+                    active_file = ?self.writer.read().unwrap().active_log_file.display(),
+                    "Tombstone written"
+                );
 
                 if pos as u64 > self.max_log_file_size {
                     self.compact()?;
+                    debug!(
+                        current_size = pos,
+                        max_log_file_size = self.max_log_file_size,
+                        active_file = ?self.writer.read().unwrap().active_log_file.display(),
+                        "Compaction required"
+                    );
                 }
                 Ok(())
             }
