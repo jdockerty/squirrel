@@ -1,27 +1,26 @@
-use criterion::{self, criterion_group, criterion_main};
+use criterion::{self, criterion_group, criterion_main, BenchmarkId};
 
 use kvs::{KvStore, KvsEngine};
+use tokio::runtime::Runtime;
 
 fn write_direct(c: &mut criterion::Criterion) {
     let store = KvStore::open(std::env::temp_dir()).expect("Open temp dir for KvStore");
-    c.bench_function("write", move |b| {
-        let key = "key".to_string();
-        let value = "value".to_string();
-        b.iter(|| {
-            store.set(key.clone(), value.clone()).unwrap();
-            assert_eq!(store.get(key.clone()).unwrap(), Some(value.clone()));
+    let rt = Runtime::new().unwrap();
+
+    c.bench_with_input(BenchmarkId::new("write", "store"), &store, |b, s| {
+        b.to_async(&rt).iter(|| async {
+            s.set("key".to_string(), "value".to_string()).await.unwrap();
         })
     });
 }
 
 fn read_direct(c: &mut criterion::Criterion) {
     let store = KvStore::open(std::env::temp_dir()).expect("Open temp dir for KvStore");
+    let rt = Runtime::new().unwrap();
 
-    c.bench_function("read", move |b| {
-        let mut counter = 0;
-        b.iter(|| {
-            assert_eq!(store.get(format!("{counter}")).unwrap(), None);
-            counter += 1;
+    c.bench_with_input(BenchmarkId::new("read", "store"), &store, |b, s| {
+        b.to_async(&rt).iter(|| async {
+            assert_eq!(s.get("value".to_string()).await.unwrap(), None);
         })
     });
 }
