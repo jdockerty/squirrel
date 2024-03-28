@@ -180,8 +180,8 @@ async fn randomised_retrieval() -> Result<()> {
                 Ok(_) => {
                     value_tracker.remove(&key);
                 }
-                Err(e) if matches!(e, kvs::KvStoreError::RemoveOperationWithNoKey) => continue,
-                Err(e) => return Err(e.into()),
+                Err(kvs::KvStoreError::RemoveOperationWithNoKey) => continue,
+                Err(e) => return Err(e),
             }
         }
     }
