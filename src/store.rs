@@ -282,7 +282,7 @@ impl KvStore {
                             Operation::Remove => {
                                 self.keydir.remove(&entry.key);
                             }
-                            Operation::Get => {}
+                            Operation::Get => warn!(?file, "Get operation in log file, skipping"),
                         }
                     }
                 });
