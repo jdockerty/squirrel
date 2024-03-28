@@ -261,13 +261,23 @@ impl KvStore {
                         debug!(?entry, pos);
                         match entry.operation {
                             Operation::Set => {
-                                let key = entry.key.clone();
-                                let keydir_entry = KeydirEntry {
-                                    file_id: file.clone(),
-                                    offset: pos,
-                                    timestamp: entry.timestamp,
-                                };
-                                self.keydir.insert(key, keydir_entry);
+                                let file = file.clone();
+                                self.keydir
+                                    .entry(entry.key)
+                                    .and_modify(|current_entry| {
+                                        // Only update the entry when the log file contains
+                                        // a newer item than in the current index.
+                                        if entry.timestamp >= current_entry.timestamp {
+                                            current_entry.file_id = file.clone();
+                                            current_entry.offset = pos;
+                                            current_entry.timestamp = entry.timestamp;
+                                        }
+                                    })
+                                    .or_insert_with(|| KeydirEntry {
+                                        file_id: file,
+                                        offset: pos,
+                                        timestamp: entry.timestamp,
+                                    });
                             }
                             Operation::Remove => {
                                 self.keydir.remove(&entry.key);
