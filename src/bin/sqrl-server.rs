@@ -1,8 +1,9 @@
 use clap::Parser;
-use kvs::client::Action;
-use kvs::KvStore;
-use kvs::KvsEngine;
-use kvs::ENGINE_FILE;
+use sqrl::client::Action;
+use sqrl::KvStore;
+use sqrl::KvsEngine;
+use sqrl::KvStoreError;
+use sqrl::ENGINE_FILE;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,7 +16,7 @@ struct App {
     #[clap(long, default_value = "127.0.0.1:4000")]
     addr: SocketAddr,
 
-    #[clap(name = "engine", short, long, default_value = "kvs")]
+    #[clap(name = "engine", short, long, default_value = "sqrl")]
     engine_name: Engine,
 
     #[clap(long, default_value = "info", env = "KVS_LOG")]
@@ -33,14 +34,15 @@ fn default_log_location() -> OsString {
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum Engine {
-    Kvs,
+    Sqrl,
+    // Not in use, but could be used to implement a different storage engine.
     Sled,
 }
 
 impl Display for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Kvs => write!(f, "kvs"),
+            Self::Sqrl => write!(f, "sqrl"),
             Self::Sled => write!(f, "sled"),
         }
     }
@@ -50,12 +52,12 @@ impl Display for Engine {
 async fn main() -> anyhow::Result<()> {
     let app = App::parse();
 
-    // We must error if the previous storage engine was not 'kvs' as it is incompatible.
-    KvStore::engine_is_kvs(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
+    // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
+    KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
     let kv = std::sync::Arc::new(KvStore::open(app.log_file)?);
 
     info!(
-        "kvs-server version: {}, engine: {}",
+        "sqrl-server version: {}, engine: {}",
         env!("CARGO_PKG_VERSION"),
         app.engine_name
     );
@@ -105,7 +107,7 @@ async fn handle_connection(
         },
         Action::Remove { key } => match kv.remove(key.to_string()).await {
             Ok(_) => debug!("{key} removed"),
-            Err(kvs::KvStoreError::RemoveOperationWithNoKey) => {
+            Err(KvStoreError::RemoveOperationWithNoKey) => {
                 debug!("{key} not found");
                 stream.write_all("Key not found".as_bytes()).await?;
                 stream.flush().await?;

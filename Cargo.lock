@@ -605,35 +605,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kvs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "bincode",
- "chrono",
- "clap",
- "criterion",
- "crossbeam-skiplist",
- "crossbeam-utils",
- "dashmap",
- "glob",
- "log",
- "panic-control",
- "predicates",
- "rand",
- "rayon",
- "serde",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-log",
- "tracing-subscriber",
- "walkdir",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1150,6 +1121,35 @@ checksum = "05ffd9c0a93b7543e062e759284fcf5f5e3b098501104bfbdde4d404db792871"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "sqrl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "bincode",
+ "chrono",
+ "clap",
+ "criterion",
+ "crossbeam-skiplist",
+ "crossbeam-utils",
+ "dashmap",
+ "glob",
+ "log",
+ "panic-control",
+ "predicates",
+ "rand",
+ "rayon",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-log",
+ "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]

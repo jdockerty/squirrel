@@ -1,4 +1,4 @@
-use kvs::{KvStore, KvsEngine, Result};
+use sqrl::{KvStore, KvsEngine, Result};
 use rand::Rng;
 use std::{collections::HashMap, sync::Arc};
 use tempfile::TempDir;
@@ -180,7 +180,7 @@ async fn randomised_retrieval() -> Result<()> {
                 Ok(_) => {
                     value_tracker.remove(&key);
                 }
-                Err(kvs::KvStoreError::RemoveOperationWithNoKey) => continue,
+                Err(sqrl::KvStoreError::RemoveOperationWithNoKey) => continue,
                 Err(e) => return Err(e),
             }
         }

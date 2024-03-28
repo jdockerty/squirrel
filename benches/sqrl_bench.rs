@@ -1,6 +1,6 @@
 use criterion::{self, criterion_group, criterion_main, BenchmarkId};
 
-use kvs::{KvStore, KvsEngine};
+use sqrl::{KvStore, KvsEngine};
 use tokio::runtime::Runtime;
 
 fn write_direct(c: &mut criterion::Criterion) {

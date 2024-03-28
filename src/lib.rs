@@ -21,7 +21,7 @@ pub use error::Error as KvStoreError;
 pub use store::KvStore;
 
 /// Prefix for log files.
-pub const LOG_PREFIX: &str = "kvs";
+pub const LOG_PREFIX: &str = "sqrl";
 /// Name of the engine in use.
 pub const ENGINE_FILE: &str = ".engine";
 

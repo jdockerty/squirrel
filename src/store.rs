@@ -236,7 +236,7 @@ impl KvStore {
 
     /// Load the keydir from any log files which are found in the log directory.
     fn load(&self) -> Result<()> {
-        let dir = &format!("{}/kvs*.log", self.log_location.display());
+        let dir = &format!("{}/sqrl*.log", self.log_location.display());
         debug!(glob_pattern = dir, "Searching for log files");
         match glob(dir) {
             Ok(files) => {
@@ -439,7 +439,7 @@ impl KvStore {
 
     /// Detect the engine used to create the store.
     /// We must return an error if previously opened with another engine, as they are incompatible.
-    pub fn engine_is_kvs(current_engine: String, engine_path: PathBuf) -> Result<()> {
+    pub fn engine_is_sqrl(current_engine: String, engine_path: PathBuf) -> Result<()> {
         if engine_path.exists() {
             let engine_type = std::fs::read_to_string(engine_path)?.trim().to_string();
 

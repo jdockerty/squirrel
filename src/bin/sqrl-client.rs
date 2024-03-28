@@ -1,5 +1,5 @@
 use clap::Parser;
-use kvs::client::Action;
+use sqrl::client::Action;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
