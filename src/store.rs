@@ -112,12 +112,19 @@ impl KvsEngine for KvStore {
             "Appended to log"
         );
 
-        let entry = KeydirEntry {
-            file_id: self.writer.read().unwrap().active_log_file.clone(),
-            offset: pos,
-            timestamp,
-        };
-        self.keydir.insert(key, entry);
+        self.keydir
+            .entry(entry.key)
+            .and_modify(|e| {
+                e.file_id = self.writer.read().unwrap().active_log_file.clone();
+                e.offset = pos;
+                e.timestamp = timestamp;
+            })
+            .or_insert_with(|| KeydirEntry {
+                file_id: self.writer.read().unwrap().active_log_file.clone(),
+                offset: pos,
+                timestamp,
+            });
+        debug!(key, "Updated keydir");
         if pos as u64 > self.max_log_file_size {
             debug!(
                 current_size = pos,
