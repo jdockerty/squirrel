@@ -1,5 +1,5 @@
-use sqrl::{KvStore, KvsEngine, Result};
 use rand::Rng;
+use sqrl::{KvStore, KvsEngine, Result};
 use std::{collections::HashMap, sync::Arc};
 use tempfile::TempDir;
 use tokio::sync::Barrier;

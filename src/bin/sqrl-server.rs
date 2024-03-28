@@ -1,8 +1,8 @@
 use clap::Parser;
 use sqrl::client::Action;
 use sqrl::KvStore;
-use sqrl::KvsEngine;
 use sqrl::KvStoreError;
+use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
