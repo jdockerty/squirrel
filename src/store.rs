@@ -236,7 +236,7 @@ impl KvStore {
 
     /// Load the keydir from any log files which are found in the log directory.
     fn load(&self) -> Result<()> {
-        let dir = &format!("{}/sqrl*.log", self.log_location.display());
+        let dir = &format!("{}/{}*.log", self.log_location.display(), LOG_PREFIX);
         debug!(glob_pattern = dir, "Searching for log files");
         match glob(dir) {
             Ok(files) => {
