@@ -3,6 +3,9 @@ use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use glob::glob;
+use raft::storage::MemStorage;
+use raft::Config;
+use raft::RawNode;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
@@ -15,6 +18,31 @@ use std::usize;
 use tracing::level_filters::LevelFilter;
 use tracing::{self, debug, info, warn};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+pub struct Cluster {
+    pub node: raft::RawNode<raft::storage::MemStorage>,
+}
+
+impl Cluster {
+    pub fn new() -> anyhow::Result<Cluster> {
+        let node = Self::raft_init()?;
+        Ok(Cluster { node })
+    }
+    fn raft_init() -> anyhow::Result<RawNode<MemStorage>> {
+        let id = 1;
+        let election_tick = 10;
+        let heartbeat_tick = 3;
+        let storage = MemStorage::new_with_conf_state((vec![1], vec![]));
+        let config = Config {
+            id,
+            election_tick,
+            heartbeat_tick,
+            ..Default::default()
+        };
+        let node = RawNode::with_default_logger(&config, storage)?;
+        Ok(node)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Operation {
