@@ -1,6 +1,5 @@
 use clap::Parser;
-use sqrl::client::Action;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use sqrl::client::{get, remove, set, Action};
 use tokio::net::TcpStream;
 
 #[derive(Debug, Parser)]
@@ -13,43 +12,27 @@ struct App {
     subcmd: Action,
 }
 
-/// Serialize the provided action and provided a size hint to the server on
-/// the provided [`TcpStream`].
-///
-/// [`TcpStream`]: tokio::net::TcpStream
-macro_rules! serialize_and_hint {
-    ($stream:expr, $action:expr) => {
-        let data = bincode::serialize(&$action)?;
-        $stream.write_u64(data.len() as u64).await?;
-        $stream.write_all(&data).await?;
-    };
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = App::parse();
-    let mut response = String::new();
-
     match cli.subcmd {
         Action::Set { key, value } => {
-            let mut stream = TcpStream::connect(cli.server).await?;
-            serialize_and_hint!(stream, Action::Set { key, value });
+            set(&mut TcpStream::connect(cli.server).await?, key, value).await?;
         }
-        Action::Get { key } => {
-            let mut stream = TcpStream::connect(cli.server).await?;
-            serialize_and_hint!(stream, Action::Get { key });
-            stream.read_to_string(&mut response).await?;
-            match response.as_str() {
-                "Key not found" => println!("{}", response),
-                _ => println!("{}", response),
-            }
-        }
+        Action::Get { key } => match get(&mut TcpStream::connect(cli.server).await?, key)
+            .await?
+            .as_str()
+        {
+            "Key not found" => println!("Key not found"),
+            value => println!("{}", value),
+        },
         Action::Remove { key } => {
-            let mut stream = TcpStream::connect(cli.server).await?;
-            serialize_and_hint!(stream, Action::Remove { key });
-            stream.read_to_string(&mut response).await?;
-            if response.as_str() == "Key not found" {
-                eprintln!("{}", response);
+            if remove(&mut TcpStream::connect(cli.server).await?, key)
+                .await?
+                .as_str()
+                == "Key not found"
+            {
+                eprintln!("Key not found");
                 std::process::exit(1);
             }
         }
