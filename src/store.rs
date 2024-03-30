@@ -1,4 +1,5 @@
 use crate::engine::KvsEngine;
+use crate::raft::Msg;
 use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
@@ -9,6 +10,7 @@ use raft::RawNode;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
+use std::net::SocketAddr;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -20,21 +22,22 @@ use tracing::{self, debug, info, warn};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 pub struct Cluster {
+    pub peers: Option<Vec<SocketAddr>>,
     pub node: raft::RawNode<raft::storage::MemStorage>,
 }
 
 impl Cluster {
-    pub fn new() -> anyhow::Result<Cluster> {
-        let node = Self::raft_init()?;
-        Ok(Cluster { node })
+    pub fn new(node_id: u64, peers: Option<Vec<SocketAddr>>) -> anyhow::Result<Cluster> {
+        let node = Self::raft_init(node_id)?;
+        Ok(Cluster { node, peers })
     }
-    fn raft_init() -> anyhow::Result<RawNode<MemStorage>> {
-        let id = 1;
+
+    fn raft_init(node_id: u64) -> anyhow::Result<RawNode<MemStorage>> {
         let election_tick = 10;
         let heartbeat_tick = 3;
         let storage = MemStorage::new_with_conf_state((vec![1], vec![]));
         let config = Config {
-            id,
+            id: node_id,
             election_tick,
             heartbeat_tick,
             ..Default::default()
@@ -89,6 +92,8 @@ pub struct KvStore {
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
 
+    raft_tx: Option<std::sync::mpsc::Sender<Msg>>,
+
     _tracing: Option<Arc<tracing::subscriber::DefaultGuard>>,
 }
 
@@ -124,6 +129,16 @@ struct StoreConfig {
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     async fn set(&self, key: String, value: String) -> Result<()> {
+        self.raft_tx
+            .as_ref()
+            .unwrap()
+            .send(Msg::Propose {
+                id: 1,
+                callback: Box::new(move || {
+                    println!("Set callback");
+                }),
+            })
+            .unwrap();
         debug!(key, value, "Setting key");
         let timestamp = chrono::Utc::now().timestamp();
         let entry = LogEntry {
@@ -244,7 +259,13 @@ impl KvStore {
             keydir: Arc::new(DashMap::new()),
             max_log_file_size: config.max_log_file_size,
             _tracing: None,
+            raft_tx: None,
         }
+    }
+
+    pub fn with_raft(&mut self, tx: std::sync::mpsc::Sender<Msg>) -> Self {
+        self.raft_tx = Some(tx);
+        self.clone()
     }
 
     /// Open a KvStore at the given path.

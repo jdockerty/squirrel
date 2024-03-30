@@ -14,7 +14,7 @@ pub mod client;
 mod engine;
 /// Errors that may originate from operating the store.
 mod error;
-mod raft;
+pub mod raft;
 /// Implementation of the key-value store.
 mod store;
 pub use engine::KvsEngine;
