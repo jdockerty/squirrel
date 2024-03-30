@@ -1,8 +1,6 @@
-use raft::prelude::Message;
-
 pub type ProposeCallback = Box<dyn Fn() + Send>;
 
 pub enum Msg {
     Propose { id: u8, callback: ProposeCallback },
-    Raft(Message),
+    Set { id: u8, key: String, value: String },
 }

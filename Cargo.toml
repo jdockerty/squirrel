@@ -40,6 +40,9 @@ tokio = { version = "1.36.0", features = ["full"] }
 raft = { version = "0.7.0" }
 prost = "0.12.3"
 bytes = "1.6.0"
+reqwest = { version = "0.12.2", features = ["json"] }
+tracing-slog = "0.2.0"
+slog = "2.7.0"
 
 [build-dependencies]
 prost-build = "0.12.3"

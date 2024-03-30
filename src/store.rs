@@ -1,6 +1,6 @@
 use crate::engine::KvsEngine;
 use crate::raft::Msg;
-use crate::{KvStoreError, Result};
+use crate::{client, KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use glob::glob;
@@ -24,12 +24,23 @@ use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 pub struct Cluster {
     pub peers: Option<Vec<SocketAddr>>,
     pub node: raft::RawNode<raft::storage::MemStorage>,
+    pub _tracing: Arc<tracing::subscriber::DefaultGuard>,
 }
 
 impl Cluster {
     pub fn new(node_id: u64, peers: Option<Vec<SocketAddr>>) -> anyhow::Result<Cluster> {
         let node = Self::raft_init(node_id)?;
-        Ok(Cluster { node, peers })
+        let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing::level_filters::LevelFilter::DEBUG)
+            .with(layer);
+        let tracing_guard = tracing::subscriber::set_default(subscriber);
+        let _tracing = Arc::new(tracing_guard);
+        Ok(Cluster {
+            node,
+            peers,
+            _tracing,
+        })
     }
 
     fn raft_init(node_id: u64) -> anyhow::Result<RawNode<MemStorage>> {
@@ -42,7 +53,9 @@ impl Cluster {
             heartbeat_tick,
             ..Default::default()
         };
-        let node = RawNode::with_default_logger(&config, storage)?;
+        let drain = tracing_slog::TracingSlogDrain;
+        let root = slog::Logger::root(drain, slog::o!());
+        let node = RawNode::new(&config, storage, &root)?;
         Ok(node)
     }
 }
@@ -129,23 +142,13 @@ struct StoreConfig {
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
     async fn set(&self, key: String, value: String) -> Result<()> {
-        self.raft_tx
-            .as_ref()
-            .unwrap()
-            .send(Msg::Propose {
-                id: 1,
-                callback: Box::new(move || {
-                    println!("Set callback");
-                }),
-            })
-            .unwrap();
         debug!(key, value, "Setting key");
         let timestamp = chrono::Utc::now().timestamp();
         let entry = LogEntry {
             timestamp,
             operation: Operation::Set,
             key: key.clone(),
-            value: Some(value),
+            value: Some(value.clone()),
         };
 
         let pos = self.append_to_log(&entry)?;
@@ -177,6 +180,11 @@ impl KvsEngine for KvStore {
             );
             self.compact()?;
         }
+        self.raft_tx
+            .as_ref()
+            .unwrap()
+            .send(Msg::Set { id: 1, key, value })
+            .unwrap();
         Ok(())
     }
 

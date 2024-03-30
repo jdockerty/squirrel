@@ -1,8 +1,8 @@
 use clap::Parser;
 use dashmap::DashMap;
-use raft::prelude::*;
 use raft::storage::MemStorage;
-use sqrl::client::Action;
+use raft::{prelude::*, StateRole};
+use sqrl::client::{self, Action};
 use sqrl::raft::{Msg, ProposeCallback};
 use sqrl::Cluster;
 use sqrl::KvStore;
@@ -10,11 +10,12 @@ use sqrl::KvStoreError;
 use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
 use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::signal::ctrl_c;
 use tracing::{debug, error, info};
 
@@ -69,6 +70,9 @@ async fn main() -> anyhow::Result<()> {
     let (tx, rx) = channel();
     // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
     KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
+    tracing_subscriber::fmt()
+        .with_max_level(app.log_level)
+        .init();
     let kv = std::sync::Arc::new(KvStore::open(app.log_file)?.with_raft(tx.clone()));
     let mut c = Cluster::new(app.node_id, app.peers)?;
 
@@ -90,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
         let mut cbs = DashMap::new();
         loop {
             interval.tick().await;
@@ -100,10 +104,23 @@ async fn main() -> anyhow::Result<()> {
                     cbs.insert(id, callback);
                     c.node.propose(vec![], vec![id]).unwrap();
                 }
-                Ok(Msg::Raft(m)) => c.node.step(m).unwrap(),
+                Ok(Msg::Set { id, key, value }) => {
+                    if c.node.raft.state == StateRole::Leader {
+                        info!("Leader sending to peers");
+                        let mut stream = TcpStream::connect("127.0.0.1:4001").await.unwrap();
+                        client::set(&mut stream, key.clone(), value.clone())
+                            .await
+                            .unwrap();
+                        stream.shutdown().await.unwrap();
+                    }
+                    c.node
+                        .propose(vec![id], format!("{}={}", key, value).into_bytes())
+                        .unwrap();
+                }
                 Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+            //println!("Ticking");
             c.node.tick();
             on_ready(&mut c.node, &mut cbs);
         }

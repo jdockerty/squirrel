@@ -3,6 +3,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tracing::info;
 
 /// Actions that can be performed by the client.
 ///
@@ -23,6 +24,7 @@ pub enum Action {
 }
 
 pub async fn set(stream: &mut TcpStream, key: String, value: String) -> anyhow::Result<()> {
+    info!("Set");
     let action = Action::Set { key, value };
     serialize_and_hint!(stream, action);
     Ok(())
