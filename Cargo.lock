@@ -1961,6 +1961,7 @@ dependencies = [
  "predicates",
  "prost",
  "prost-build",
+ "protobuf",
  "raft",
  "rand 0.6.5",
  "rayon",

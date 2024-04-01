@@ -1,9 +1,10 @@
 use crate::engine::KvsEngine;
-use crate::raft::Msg;
-use crate::{client, KvStoreError, Result};
+use crate::raft::{Msg, Node};
+use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use glob::glob;
+use raft::eraftpb::Snapshot;
 use raft::storage::MemStorage;
 use raft::Config;
 use raft::RawNode;
@@ -23,13 +24,16 @@ use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
 pub struct Cluster {
     pub peers: Option<Vec<SocketAddr>>,
-    pub node: raft::RawNode<raft::storage::MemStorage>,
+    pub node: Node,
     pub _tracing: Arc<tracing::subscriber::DefaultGuard>,
 }
 
 impl Cluster {
     pub fn new(node_id: u64, peers: Option<Vec<SocketAddr>>) -> anyhow::Result<Cluster> {
-        let node = Self::raft_init(node_id)?;
+        let node = match node_id {
+            1 => Node::create_leader(node_id)?,
+            _ => Node::create_follower(node_id)?,
+        };
         let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
         let subscriber = tracing_subscriber::registry()
             .with(tracing::level_filters::LevelFilter::DEBUG)
@@ -41,22 +45,6 @@ impl Cluster {
             peers,
             _tracing,
         })
-    }
-
-    fn raft_init(node_id: u64) -> anyhow::Result<RawNode<MemStorage>> {
-        let election_tick = 10;
-        let heartbeat_tick = 3;
-        let storage = MemStorage::new_with_conf_state((vec![1], vec![]));
-        let config = Config {
-            id: node_id,
-            election_tick,
-            heartbeat_tick,
-            ..Default::default()
-        };
-        let drain = tracing_slog::TracingSlogDrain;
-        let root = slog::Logger::root(drain, slog::o!());
-        let node = RawNode::new(&config, storage, &root)?;
-        Ok(node)
     }
 }
 

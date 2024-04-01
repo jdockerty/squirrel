@@ -43,6 +43,7 @@ bytes = "1.6.0"
 reqwest = { version = "0.12.2", features = ["json"] }
 tracing-slog = "0.2.0"
 slog = "2.7.0"
+protobuf = { version = "2", features = ["with-bytes"] }
 
 [build-dependencies]
 prost-build = "0.12.3"
