@@ -2,32 +2,32 @@ use clap::Parser;
 use dashmap::DashMap;
 use protobuf::Message as _;
 use raft::eraftpb::ConfChange;
-use raft::eraftpb::{Message, Entry, EntryType};
+use raft::eraftpb::{Entry, EntryType, Message};
 use raft::storage::MemStorage;
 use raft::{prelude::*, StateRole};
 use sqrl::client::{self, Action};
-use sqrl::raft as internal_raft;
-use internal_raft::{Msg, Node, ProposeCallback};
+use sqrl::raft as sqrlraft;
 use sqrl::Cluster;
 use sqrl::KvStore;
 use sqrl::KvStoreError;
 use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
-use tokio::net::TcpStream;
+use sqrlraft::{Msg, Node, ProposeCallback};
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::signal::ctrl_c;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
-pub mod sqrlraft {
+pub mod sqrlraft_proto {
     tonic::include_proto!("sqrlraft");
 }
 
@@ -75,6 +75,83 @@ impl Display for Engine {
     }
 }
 
+#[tonic::async_trait]
+impl sqrlraft_proto::raft_server::Raft for Cluster {
+    async fn send(
+        &self,
+        msg: tonic::Request<sqrlraft_proto::Message>,
+    ) -> tonic::Result<tonic::Response<sqrlraft_proto::MessageAck>, tonic::Status> {
+        Ok(tonic::Response::new(sqrlraft_proto::MessageAck {
+            success: true,
+        }))
+    }
+}
+
+async fn run_server(c: Cluster) -> anyhow::Result<()> {
+    Ok(())
+}
+
+async fn drive_raft(mut c: Cluster, rx: Receiver<Msg>) -> anyhow::Result<()> {
+    // A global pending proposals queue. New proposals will be pushed back into the queue, and
+    // after it's committed by the raft cluster, it will be poped from the queue.
+    let proposals = Arc::new(Mutex::new(VecDeque::<Proposal>::new()));
+
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    let mut cbs = DashMap::new();
+    loop {
+        interval.tick().await;
+
+        let node = match c.node.0 {
+            Some(ref mut c) => c,
+            // Node not initialized
+            None => continue,
+        };
+
+        match rx.recv_timeout(interval.period()) {
+            Ok(Msg::Propose { id, callback }) => {
+                cbs.insert(id, callback);
+                //let p = Proposal::normal(id, "test".to_string());
+                node.propose(vec![], vec![id]).unwrap();
+            }
+            Ok(Msg::Set { id, key, value }) => {
+                match node.raft.state {
+                    StateRole::Leader => {
+                        info!("Leader sending to peers");
+                        node.propose(vec![], vec![id]).unwrap();
+                        for p in &c.peers.clone().unwrap() {
+                            //info!("sending to {:?}", p);
+                            //let mut proposals = proposals.lock().await;
+                            //for p in proposals.iter_mut().skip_while(|p| p.proposed > 0)
+                            //{
+                            //    propose(node, p);
+                            //}
+                            let mut stream = TcpStream::connect(p).await.unwrap();
+                            client::set(&mut stream, key.clone(), value.clone())
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    StateRole::Follower => {
+                        info!("Follower receiving from leader");
+                    }
+                    _ => {}
+                }
+
+                //node.propose(vec![id], format!("{}={}", key, value).into_bytes())
+                //    .unwrap();
+            }
+            Ok(Msg::Raft(msg)) => {
+                node.step(msg).unwrap();
+            }
+            Err(RecvTimeoutError::Timeout) => (),
+            Err(RecvTimeoutError::Disconnected) => (),
+        }
+        node.tick();
+        let peers = c.peers.clone();
+        on_ready(&mut c.node, &mut cbs, peers.unwrap());
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = App::parse();
@@ -108,72 +185,11 @@ async fn main() -> anyhow::Result<()> {
     match app.peers {
         Some(peers) => {
             info!(node_id = app.node_id, "Starting Raft node");
-            // gRPC server for raft messages
-            tokio::spawn(async move {
-                let s = tonic::transport::Server::builder();
-
-            });
-
-            // Raft driver
-            tokio::spawn(async move {
-                // A global pending proposals queue. New proposals will be pushed back into the queue, and
-                // after it's committed by the raft cluster, it will be poped from the queue.
-                let proposals = Arc::new(Mutex::new(VecDeque::<Proposal>::new()));
-
-                let mut interval = tokio::time::interval(Duration::from_millis(100));
-                let mut cbs = DashMap::new();
-                loop {
-                    interval.tick().await;
-
-                    let node = match c.node.0 {
-                        Some(ref mut c) => c,
-                        // Node not initialized
-                        None => continue,
-                    };
-
-                    match rx.recv_timeout(interval.period()) {
-                        Ok(Msg::Propose { id, callback }) => {
-                            cbs.insert(id, callback);
-                            //let p = Proposal::normal(id, "test".to_string());
-                            node.propose(vec![], vec![id]).unwrap();
-                        }
-                        Ok(Msg::Set { id, key, value }) => {
-                            match node.raft.state {
-                                StateRole::Leader => {
-                                    info!("Leader sending to peers");
-                                    node.propose(vec![], vec![id]).unwrap();
-                                    for p in &peers {
-                                        info!("sending to {p}");
-                                        //let mut proposals = proposals.lock().await;
-                                        //for p in proposals.iter_mut().skip_while(|p| p.proposed > 0)
-                                        //{
-                                        //    propose(node, p);
-                                        //}
-                                        let mut stream = TcpStream::connect(p).await.unwrap();
-                                        client::set(&mut stream, key.clone(), value.clone())
-                                            .await
-                                            .unwrap();
-                                    }
-                                }
-                                StateRole::Follower => {
-                                    info!("Follower receiving from leader");
-                                }
-                                _ => {}
-                            }
-
-                            //node.propose(vec![id], format!("{}={}", key, value).into_bytes())
-                            //    .unwrap();
-                        }
-                        Ok(Msg::Raft(msg)) => {
-                            node.step(msg).unwrap();
-                        }
-                        Err(RecvTimeoutError::Timeout) => (),
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                    node.tick();
-                    on_ready(&mut c.node, &mut cbs, peers.clone());
-                }
-            });
+            let _s = tonic::transport::Server::builder()
+                .add_service(sqrlraft_proto::raft_server::RaftServer::new(c));
+            loop {
+                drive_raft(c, rx).await;
+            }
         }
         None => info!("Starting single node store"),
     };
@@ -200,7 +216,7 @@ fn on_ready(raft_group: &mut Node, cbs: &mut DashMap<u8, ProposeCallback>, peers
         let handle_messages = |msgs: Vec<Message>| {
             for msg in msgs {
                 // Send messages to other peers.
-                for p in peers.clone(){
+                for p in peers.clone() {
                     let mut stream = std::net::TcpStream::connect(p).unwrap();
                     stream.write_all(&msg.write_to_bytes().unwrap()).unwrap();
                 }
@@ -341,7 +357,6 @@ impl Proposal {
             proposed: 0,
         }
     }
-
 }
 
 fn propose(raft_group: &mut RawNode<MemStorage>, proposal: &mut Proposal) {
