@@ -1,12 +1,14 @@
 use raft::eraftpb::Snapshot;
 use raft::Config;
 use raft::{storage::MemStorage, RawNode};
+use raft::eraftpb::Message;
 
 pub type ProposeCallback = Box<dyn Fn() + Send>;
 
 pub enum Msg {
     Propose { id: u8, callback: ProposeCallback },
     Set { id: u8, key: String, value: String },
+    Raft(Message)
 }
 
 pub struct Node(pub Option<RawNode<MemStorage>>);

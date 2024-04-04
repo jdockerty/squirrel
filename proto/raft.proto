@@ -1,0 +1,13 @@
+syntax = "proto3";
+package sqrlraft;
+
+import "eraftpb.proto";
+
+message MessageAck {
+    bool success = 1;
+}
+
+service RaftServer {
+    rpc Send(eraftpb.Message) returns (MessageAck);
+}
+
