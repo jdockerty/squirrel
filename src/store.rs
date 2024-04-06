@@ -1,18 +1,11 @@
 use crate::engine::KvsEngine;
-use crate::raft::{Msg, Node};
 use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use glob::glob;
-use prost::Message;
-use raft::eraftpb::Snapshot;
-use raft::storage::MemStorage;
-use raft::Config;
-use raft::RawNode;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
-use std::net::SocketAddr;
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -22,32 +15,6 @@ use std::usize;
 use tracing::level_filters::LevelFilter;
 use tracing::{self, debug, info, warn};
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-pub struct Cluster {
-    pub peers: Option<Vec<SocketAddr>>,
-    pub node: Node,
-    pub _tracing: Arc<tracing::subscriber::DefaultGuard>,
-}
-
-impl Cluster {
-    pub fn new(node_id: u64, peers: Option<Vec<SocketAddr>>) -> anyhow::Result<Cluster> {
-        let node = match node_id {
-            1 => Node::create_leader(node_id)?,
-            _ => Node::create_follower(node_id)?,
-        };
-        let layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing::level_filters::LevelFilter::DEBUG)
-            .with(layer);
-        let tracing_guard = tracing::subscriber::set_default(subscriber);
-        let _tracing = Arc::new(tracing_guard);
-        Ok(Cluster {
-            node,
-            peers,
-            _tracing,
-        })
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Operation {
@@ -93,8 +60,6 @@ pub struct KvStore {
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
-
-    raft_tx: Option<tokio::sync::mpsc::Sender<Msg>>,
 
     _tracing: Option<Arc<tracing::subscriber::DefaultGuard>>,
 }
@@ -169,12 +134,6 @@ impl KvsEngine for KvStore {
             );
             self.compact()?;
         }
-        self.raft_tx
-            .as_ref()
-            .unwrap()
-            .send(Msg::Set { id: 1, key, value })
-            .await
-            .unwrap();
         Ok(())
     }
 
@@ -257,13 +216,7 @@ impl KvStore {
             keydir: Arc::new(DashMap::new()),
             max_log_file_size: config.max_log_file_size,
             _tracing: None,
-            raft_tx: None,
         }
-    }
-
-    pub fn with_raft(&mut self, tx: tokio::sync::mpsc::Sender<Msg>) -> Self {
-        self.raft_tx = Some(tx);
-        self.clone()
     }
 
     /// Open a KvStore at the given path.

@@ -43,15 +43,9 @@ tracing-slog = "0.2.0"
 slog = "2.7.0"
 protobuf = { version = "2"}
 
-# TOOD: this doesn't compile when using these versions. Need to investigate
-# tonic = "0.11.0"
-# prost = "0.12.3"
-# raft = "0.7.0"
-raft = { version = "0.6.0", default-features = false, features = ["prost-codec"]}
 tonic = "0.4"
 prost = "0.7"
+openraft = "0.9.3"
 
 [build-dependencies]
 tonic-build = "0.4.0"
-# As above for the TODO comment
-# tonic-build = "0.11.0"

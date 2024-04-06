@@ -19,12 +19,7 @@ pub mod raft;
 mod store;
 pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
-pub use store::{Cluster, KvStore};
-
-pub mod proto {
-    tonic::include_proto!("sqrlraft");
-}
-
+pub use store::KvStore;
 
 /// Prefix for log files.
 pub const LOG_PREFIX: &str = "sqrl-";
