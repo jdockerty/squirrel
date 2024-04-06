@@ -21,16 +21,15 @@ pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
 pub use store::{Cluster, KvStore};
 
+pub mod proto {
+    tonic::include_proto!("sqrlraft");
+}
+
+
 /// Prefix for log files.
 pub const LOG_PREFIX: &str = "sqrl-";
 /// Name of the engine in use.
 pub const ENGINE_FILE: &str = ".engine";
-
-//pub mod snazzy {
-//    pub mod items {
-//        include!(concat!(env!("OUT_DIR"), "/snazzy.items.rs"));
-//    }
-//}
 
 // The maximum size of a log file before it should be compacted.
 //

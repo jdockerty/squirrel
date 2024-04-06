@@ -15,21 +15,18 @@ use sqrl::ENGINE_FILE;
 use sqrlraft::{Msg, Node, ProposeCallback};
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::net::{TcpStream, ToSocketAddrs};
+use tokio::net::TcpStream;
 use tokio::signal::ctrl_c;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
+use sqrl::proto::raft_server::RaftServer;
 
-pub mod sqrlraft_proto {
-    tonic::include_proto!("sqrlraft");
-}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -75,13 +72,18 @@ impl Display for Engine {
     }
 }
 
+struct SqrlServer(tokio::sync::mpsc::Sender<Msg>);
+
+
 #[tonic::async_trait]
-impl sqrlraft_proto::raft_server::Raft for Cluster {
+impl sqrl::proto::raft_server::Raft for SqrlServer {
     async fn send(
         &self,
-        msg: tonic::Request<sqrlraft_proto::Message>,
-    ) -> tonic::Result<tonic::Response<sqrlraft_proto::MessageAck>, tonic::Status> {
-        Ok(tonic::Response::new(sqrlraft_proto::MessageAck {
+        msg: tonic::Request<raft::eraftpb::Message>,
+    ) -> Result<tonic::Response<sqrl::proto::MessageAck>, tonic::Status> {
+        let msg = msg.into_inner();
+        self.0.send(Msg::Raft(msg)).await.unwrap();
+        Ok(tonic::Response::new(sqrl::proto::MessageAck {
             success: true,
         }))
     }
@@ -91,7 +93,10 @@ async fn run_server(c: Cluster) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn drive_raft(mut c: Cluster, rx: Receiver<Msg>) -> anyhow::Result<()> {
+async fn drive_raft(
+    mut c: Cluster,
+    mut rx: tokio::sync::mpsc::Receiver<Msg>,
+) -> anyhow::Result<()> {
     // A global pending proposals queue. New proposals will be pushed back into the queue, and
     // after it's committed by the raft cluster, it will be poped from the queue.
     let proposals = Arc::new(Mutex::new(VecDeque::<Proposal>::new()));
@@ -107,44 +112,47 @@ async fn drive_raft(mut c: Cluster, rx: Receiver<Msg>) -> anyhow::Result<()> {
             None => continue,
         };
 
-        match rx.recv_timeout(interval.period()) {
-            Ok(Msg::Propose { id, callback }) => {
-                cbs.insert(id, callback);
-                //let p = Proposal::normal(id, "test".to_string());
-                node.propose(vec![], vec![id]).unwrap();
-            }
-            Ok(Msg::Set { id, key, value }) => {
-                match node.raft.state {
-                    StateRole::Leader => {
-                        info!("Leader sending to peers");
-                        node.propose(vec![], vec![id]).unwrap();
-                        for p in &c.peers.clone().unwrap() {
-                            //info!("sending to {:?}", p);
-                            //let mut proposals = proposals.lock().await;
-                            //for p in proposals.iter_mut().skip_while(|p| p.proposed > 0)
-                            //{
-                            //    propose(node, p);
-                            //}
-                            let mut stream = TcpStream::connect(p).await.unwrap();
-                            client::set(&mut stream, key.clone(), value.clone())
-                                .await
-                                .unwrap();
-                        }
-                    }
-                    StateRole::Follower => {
-                        info!("Follower receiving from leader");
-                    }
-                    _ => {}
+        match rx.recv().await {
+            Some(msg) => match msg {
+                Msg::Propose { id, callback } => {
+                    cbs.insert(id, callback);
+                    //let p = Proposal::normal(id, "test".to_string());
+                    node.propose(vec![], vec![id]).unwrap();
                 }
+                Msg::Set { id, key, value } => {
+                    match node.raft.state {
+                        StateRole::Leader => {
+                            info!("Leader sending to peers");
+                            node.propose(vec![], vec![id]).unwrap();
+                            for p in &c.peers.clone().unwrap() {
+                                //info!("sending to {:?}", p);
+                                //let mut proposals = proposals.lock().await;
+                                //for p in proposals.iter_mut().skip_while(|p| p.proposed > 0)
+                                //{
+                                //    propose(node, p);
+                                //}
+                                let mut stream = TcpStream::connect(p).await.unwrap();
+                                client::set(&mut stream, key.clone(), value.clone())
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        StateRole::Follower => {
+                            info!("Follower receiving from leader");
+                        }
+                        _ => {}
+                    }
 
-                //node.propose(vec![id], format!("{}={}", key, value).into_bytes())
-                //    .unwrap();
-            }
-            Ok(Msg::Raft(msg)) => {
-                node.step(msg).unwrap();
-            }
-            Err(RecvTimeoutError::Timeout) => (),
-            Err(RecvTimeoutError::Disconnected) => (),
+                    //node.propose(vec![id], format!("{}={}", key, value).into_bytes())
+                    //    .unwrap();
+                }
+                Msg::Raft(msg) => {
+                    node.step(msg).unwrap();
+                }
+            },
+            None => {} 
+            //Err(RecvTimeoutError::Timeout) => (),
+             //Err(RecvTimeoutError::Disconnected) => (),
         }
         node.tick();
         let peers = c.peers.clone();
@@ -156,13 +164,13 @@ async fn drive_raft(mut c: Cluster, rx: Receiver<Msg>) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let app = App::parse();
 
-    let (tx, rx) = channel();
     // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
     KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
     tracing_subscriber::fmt()
         .with_max_level(app.log_level)
         .init();
-    let kv = std::sync::Arc::new(KvStore::open(app.log_file)?.with_raft(tx.clone()));
+    let (raft_tx, mut raft_rx) = tokio::sync::mpsc::channel(32);
+    let kv = std::sync::Arc::new(KvStore::open(app.log_file)?.with_raft(raft_tx.clone()));
     let mut c = Cluster::new(app.node_id, app.peers.clone())?;
 
     info!(
@@ -185,11 +193,10 @@ async fn main() -> anyhow::Result<()> {
     match app.peers {
         Some(peers) => {
             info!(node_id = app.node_id, "Starting Raft node");
-            let _s = tonic::transport::Server::builder()
-                .add_service(sqrlraft_proto::raft_server::RaftServer::new(c));
-            loop {
-                drive_raft(c, rx).await;
-            }
+            let srv = SqrlServer(raft_tx);
+            let s = tonic::transport::Server::builder()
+                .add_service(RaftServer::new(srv));
+            drive_raft(c, raft_rx).await?;
         }
         None => info!("Starting single node store"),
     };

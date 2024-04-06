@@ -4,6 +4,7 @@ use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
 use glob::glob;
+use prost::Message;
 use raft::eraftpb::Snapshot;
 use raft::storage::MemStorage;
 use raft::Config;
@@ -93,7 +94,7 @@ pub struct KvStore {
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
 
-    raft_tx: Option<std::sync::mpsc::Sender<Msg>>,
+    raft_tx: Option<tokio::sync::mpsc::Sender<Msg>>,
 
     _tracing: Option<Arc<tracing::subscriber::DefaultGuard>>,
 }
@@ -172,6 +173,7 @@ impl KvsEngine for KvStore {
             .as_ref()
             .unwrap()
             .send(Msg::Set { id: 1, key, value })
+            .await
             .unwrap();
         Ok(())
     }
@@ -259,7 +261,7 @@ impl KvStore {
         }
     }
 
-    pub fn with_raft(&mut self, tx: std::sync::mpsc::Sender<Msg>) -> Self {
+    pub fn with_raft(&mut self, tx: tokio::sync::mpsc::Sender<Msg>) -> Self {
         self.raft_tx = Some(tx);
         self.clone()
     }
