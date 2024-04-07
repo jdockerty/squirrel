@@ -1,5 +1,10 @@
+use actix_web::middleware;
+use actix_web::middleware::Logger;
+use actix_web::web::Data;
+use actix_web::HttpServer;
 use clap::Parser;
 use sqrl::client::Action;
+use sqrl::raft_api;
 use sqrl::KvStore;
 use sqrl::KvStoreError;
 use sqrl::KvsEngine;
@@ -78,30 +83,90 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(app.log_level)
         .init();
-    let kv = std::sync::Arc::new(KvStore::open(app.log_file)?);
-
-    info!(
-        "sqrl-server version: {}, engine: {}",
-        env!("CARGO_PKG_VERSION"),
-        app.engine_name
-    );
-
-    let listener = TcpListener::bind(app.addr).await?;
-    info!("k-v store server on {}", app.addr);
-
-    // Handle incoming connections.
-    tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            debug!("Connection established: {stream:?}");
-            handle_connection(stream, kv.clone()).await.unwrap();
-        }
-    });
-
     match app.peers {
         Some(_peers) => {
             info!(node_id = app.node_id, "Starting Raft node");
+            let config = openraft::Config {
+                heartbeat_interval: 500,
+                election_timeout_min: 1500,
+                election_timeout_max: 3000,
+                ..Default::default()
+            };
+
+            let config = std::sync::Arc::new(config.validate().unwrap());
+            let kv_store = std::sync::Arc::new(sqrl::raft::StateMachineStore::default());
+            let log_store = sqrl::raft::LogStore::default();
+
+            let network = sqrl::raft_network::Network {};
+
+            let r = openraft::Raft::new(
+                app.node_id,
+                config.clone(),
+                network,
+                log_store.clone(),
+                kv_store.clone(),
+            )
+            .await
+            .unwrap();
+            // Create an application that will store all the instances created above, this will
+            // later be used on the actix-web services.
+            let app_data = Data::new(sqrl::raft_network::AppData {
+                id: app.node_id,
+                addr: app.addr.to_string(),
+                raft: r,
+                log_store,
+                state_machine_store: kv_store,
+                config,
+            });
+
+            // Start the actix-web server.
+            let server = HttpServer::new(move || {
+                actix_web::App::new()
+                    .wrap(Logger::default())
+                    .wrap(Logger::new("%a %{User-Agent}i"))
+                    .wrap(middleware::Compress::default())
+                    .app_data(app_data.clone())
+                    // raft internal RPC
+                    .service(crate::raft_api::append)
+                    .service(crate::raft_api::snapshot)
+                    .service(crate::raft_api::vote)
+                    // admin API
+                    .service(crate::raft_api::init)
+                    .service(crate::raft_api::add_learner)
+                    .service(crate::raft_api::change_membership)
+                    //.service(crate::raft_api::metrics)
+                    // application API
+                    .service(crate::raft_api::write)
+                    .service(crate::raft_api::read)
+                    .service(crate::raft_api::consistent_read)
+            });
+
+            let x = server.bind(app.addr)?;
+
+            x.run().await?;
         }
-        None => info!("Starting single node store"),
+        None => {
+            info!("Starting single node store");
+
+            let kv = std::sync::Arc::new(KvStore::open(app.log_file)?);
+
+            info!(
+                "sqrl-server version: {}, engine: {}",
+                env!("CARGO_PKG_VERSION"),
+                app.engine_name
+            );
+
+            let listener = TcpListener::bind(app.addr).await?;
+            info!("k-v store server on {}", app.addr);
+
+            // Handle incoming connections.
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    debug!("Connection established: {stream:?}");
+                    handle_connection(stream, kv.clone()).await.unwrap();
+                }
+            });
+        }
     };
 
     // TODO: add cancellation tokens

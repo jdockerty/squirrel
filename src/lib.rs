@@ -15,7 +15,9 @@ mod engine;
 /// Errors that may originate from operating the store.
 mod error;
 pub mod raft;
+pub mod raft_api;
 mod raft_log;
+pub mod raft_network;
 /// Implementation of the key-value store.
 mod store;
 pub use engine::KvsEngine;
@@ -38,3 +40,19 @@ static MAX_LOG_FILE_SIZE: u64 = std::env::var("KVS_MAX_LOG_FILE_SIZE")
 }
 
 pub type Result<T> = anyhow::Result<T, KvStoreError>;
+
+pub mod typ {
+
+    use crate::raft::TypeConfig;
+
+    pub type RaftError<E = openraft::error::Infallible> = openraft::error::RaftError<TypeConfig, E>;
+    pub type RPCError<E = openraft::error::Infallible> =
+        openraft::error::RPCError<TypeConfig, RaftError<E>>;
+
+    pub type ClientWriteError = openraft::error::ClientWriteError<TypeConfig>;
+    pub type CheckIsLeaderError = openraft::error::CheckIsLeaderError<TypeConfig>;
+    pub type ForwardToLeader = openraft::error::ForwardToLeader<TypeConfig>;
+    pub type InitializeError = openraft::error::InitializeError<TypeConfig>;
+
+    pub type ClientWriteResponse = openraft::raft::ClientWriteResponse<TypeConfig>;
+}
