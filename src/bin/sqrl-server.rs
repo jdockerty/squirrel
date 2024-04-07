@@ -1,22 +1,14 @@
 use clap::Parser;
-use dashmap::DashMap;
-use protobuf::Message as _;
-use sqrl::client::{self, Action};
+use sqrl::client::Action;
 use sqrl::KvStore;
 use sqrl::KvStoreError;
 use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
-use std::collections::VecDeque;
-use std::io::Write;
-use std::sync::Arc;
-use std::time::Duration;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::net::TcpStream;
 use tokio::signal::ctrl_c;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Parser)]
@@ -106,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     match app.peers {
-        Some(peers) => {
+        Some(_peers) => {
             info!(node_id = app.node_id, "Starting Raft node");
         }
         None => info!("Starting single node store"),

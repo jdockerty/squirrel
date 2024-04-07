@@ -1199,9 +1199,8 @@ checksum = "0ab1bc2a289d34bd04a330323ac98a1b4bc82c9d9fcb1e66b63caa84da26b575"
 
 [[package]]
 name = "openraft"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0de24bfa54deee36a6065030fa9df7a109502a3989c47486c27533b58859798f"
+version = "0.10.0"
+source = "git+https://github.com/datafuselabs/openraft.git#fb296e60dad882671481d3d6b30f7ec4155b2567"
 dependencies = [
  "anyerror",
  "byte-unit",
@@ -1211,6 +1210,7 @@ dependencies = [
  "maplit",
  "openraft-macros",
  "rand 0.8.5",
+ "serde",
  "thiserror",
  "tokio",
  "tracing",
@@ -1220,9 +1220,8 @@ dependencies = [
 
 [[package]]
 name = "openraft-macros"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945e12771d6b8a6776000e4078c8a15cfc00243cc948f0c45ae9a520d1080424"
+version = "0.10.0"
+source = "git+https://github.com/datafuselabs/openraft.git#fb296e60dad882671481d3d6b30f7ec4155b2567"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1863,9 +1862,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.114"
+version = "1.0.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5f09b1bd632ef549eaa9f60a1f8de742bdbc698e6cee2095fc84dde5f549ae0"
+checksum = "12dc5c46daa8e9fdf4f5e71b6cf9a53f2487da0e86e55808e2d35539666497dd"
 dependencies = [
  "itoa",
  "ryu",
@@ -1958,6 +1957,7 @@ dependencies = [
  "rayon",
  "reqwest",
  "serde",
+ "serde_json",
  "slog",
  "tempfile",
  "thiserror",

@@ -15,6 +15,7 @@ mod engine;
 /// Errors that may originate from operating the store.
 mod error;
 pub mod raft;
+mod raft_log;
 /// Implementation of the key-value store.
 mod store;
 pub use engine::KvsEngine;

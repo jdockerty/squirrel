@@ -40,12 +40,13 @@ impl Default for StoreWriter {
     }
 }
 
+pub type KeyDir = Arc<DashMap<String, KeydirEntry>>;
 /// A key-value store inspired by Bitcask.
 ///
 /// Writes are appended to a Write-Ahead Log (WAL) and then held in memory using
 /// a keydir. In the event of a crash or [`Drop`], the keydir index is rebuilt
 /// using any log files that are found within the given directory.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct KvStore {
     pub writer: Arc<RwLock<StoreWriter>>,
 
@@ -56,7 +57,7 @@ pub struct KvStore {
     /// contains the offset to the entry in the log file.
     ///
     /// This uses [`DashMap`] to allow for concurrent reads and writes.
-    keydir: Arc<DashMap<String, KeydirEntry>>,
+    pub keydir: KeyDir,
 
     /// The maximum size of a log file in bytes.
     max_log_file_size: u64,
@@ -77,7 +78,7 @@ struct LogEntry {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct KeydirEntry {
+pub struct KeydirEntry {
     /// The file where the entry is stored.
     file_id: PathBuf,
 
