@@ -29,4 +29,7 @@ pub enum Error {
 
     #[error("An internal error occurred: {0}")]
     InternalError(#[from] anyhow::Error),
+
+    #[error("Tonic error: {0}")]
+    TonicError(#[from] tonic::transport::Error),
 }

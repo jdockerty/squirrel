@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package actions;
+
+service Action {
+    rpc Set(SetRequest) returns (Acknowledgement);
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc Remove(RemoveRequest) returns (Acknowledgement);
+}
+
+message Acknowledgement {
+    bool success = 1;
+}
+
+message SetRequest {
+    string key = 1;
+    string value = 2;
+}
+
+message GetRequest {
+    string key = 1;
+}
+
+message GetResponse {
+    optional string value = 1;
+}
+
+message RemoveRequest {
+    string key = 1;
+}
