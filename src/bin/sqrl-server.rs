@@ -1,7 +1,7 @@
 use clap::Parser;
-use sqrl::actions;
-use sqrl::actions::action_server::Action as ActionSrv;
-use sqrl::actions::action_server::ActionServer;
+use proto::action_server::Action as ActionSrv;
+use proto::action_server::ActionServer;
+use proto::{Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetRequest};
 use sqrl::KvStore;
 use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tracing::info;
+
+mod proto {
+    tonic::include_proto!("actions");
+}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -67,34 +71,28 @@ impl KvServer {
 impl ActionSrv for KvServer {
     async fn get(
         &self,
-        req: tonic::Request<actions::GetRequest>,
-    ) -> tonic::Result<tonic::Response<actions::GetResponse>, tonic::Status> {
+        req: tonic::Request<GetRequest>,
+    ) -> tonic::Result<tonic::Response<GetResponse>, tonic::Status> {
         let req = req.into_inner();
         let value = self.store.get(req.key).await.unwrap();
-        Ok(tonic::Response::new(actions::GetResponse { value }))
+        Ok(tonic::Response::new(GetResponse { value }))
     }
     async fn set(
         &self,
-        req: tonic::Request<actions::SetRequest>,
-    ) -> tonic::Result<tonic::Response<actions::Acknowledgement>, tonic::Status> {
+        req: tonic::Request<SetRequest>,
+    ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         let req = req.into_inner();
         self.store.set(req.key, req.value).await.unwrap();
-        Ok(tonic::Response::new(actions::Acknowledgement {
-            success: true,
-        }))
+        Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
     async fn remove(
         &self,
-        req: tonic::Request<actions::RemoveRequest>,
-    ) -> tonic::Result<tonic::Response<actions::Acknowledgement>, tonic::Status> {
+        req: tonic::Request<RemoveRequest>,
+    ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         let req = req.into_inner();
         match self.store.remove(req.key).await {
-            Ok(_) => Ok(tonic::Response::new(actions::Acknowledgement {
-                success: true,
-            })),
-            Err(_) => Ok(tonic::Response::new(actions::Acknowledgement {
-                success: false,
-            })),
+            Ok(_) => Ok(tonic::Response::new(Acknowledgement { success: true })),
+            Err(_) => Ok(tonic::Response::new(Acknowledgement { success: false })),
         }
     }
 }

@@ -1,7 +1,12 @@
 use clap::Parser;
-use sqrl::actions::action_client::ActionClient;
-use sqrl::actions::{GetRequest, SetRequest};
-use sqrl::client::Action;
+use proto::action_client::ActionClient;
+use proto::RemoveRequest;
+use proto::{GetRequest, SetRequest};
+use sqrl::action::Action;
+
+mod proto {
+    tonic::include_proto!("actions");
+}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -33,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Action::Remove { key } => {
             let response = client
-                .remove(tonic::Request::new(sqrl::actions::RemoveRequest { key }))
+                .remove(tonic::Request::new(RemoveRequest { key }))
                 .await?;
             match response.into_inner().success {
                 true => {}
