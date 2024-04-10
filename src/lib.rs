@@ -26,6 +26,11 @@ pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
 pub use store::KvStore;
 pub mod action;
+pub mod client;
+
+mod proto {
+    tonic::include_proto!("actions");
+}
 
 /// Prefix for log files.
 pub const LOG_PREFIX: &str = "sqrl-";
