@@ -1,14 +1,14 @@
 use clap::Parser;
-use sqrl::client::Action;
+use sqrl::actions;
+use sqrl::actions::action_server::Action as ActionSrv;
+use sqrl::actions::action_server::ActionServer;
 use sqrl::KvStore;
-use sqrl::KvStoreError;
 use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
+use std::sync::Arc;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tracing::info;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -48,13 +48,64 @@ impl Display for Engine {
     }
 }
 
+#[derive(Clone)]
+struct KvServer {
+    pub store: Arc<KvStore>,
+}
+
+impl KvServer {
+    pub fn new<P>(path: P) -> anyhow::Result<Self>
+    where
+        P: Into<std::path::PathBuf>,
+    {
+        let store = Arc::new(KvStore::open(path)?);
+        Ok(Self { store })
+    }
+}
+
+#[tonic::async_trait]
+impl ActionSrv for KvServer {
+    async fn get(
+        &self,
+        req: tonic::Request<actions::GetRequest>,
+    ) -> tonic::Result<tonic::Response<actions::GetResponse>, tonic::Status> {
+        let req = req.into_inner();
+        let value = self.store.get(req.key).await.unwrap();
+        Ok(tonic::Response::new(actions::GetResponse { value }))
+    }
+    async fn set(
+        &self,
+        req: tonic::Request<actions::SetRequest>,
+    ) -> tonic::Result<tonic::Response<actions::Acknowledgement>, tonic::Status> {
+        let req = req.into_inner();
+        self.store.set(req.key, req.value).await.unwrap();
+        Ok(tonic::Response::new(actions::Acknowledgement {
+            success: true,
+        }))
+    }
+    async fn remove(
+        &self,
+        req: tonic::Request<actions::RemoveRequest>,
+    ) -> tonic::Result<tonic::Response<actions::Acknowledgement>, tonic::Status> {
+        let req = req.into_inner();
+        match self.store.remove(req.key).await {
+            Ok(_) => Ok(tonic::Response::new(actions::Acknowledgement {
+                success: true,
+            })),
+            Err(_) => Ok(tonic::Response::new(actions::Acknowledgement {
+                success: false,
+            })),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = App::parse();
 
     // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
     KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
-    let kv = std::sync::Arc::new(KvStore::open(app.log_file)?);
+    let srv = KvServer::new(app.log_file)?;
 
     info!(
         "sqrl-server version: {}, engine: {}",
@@ -62,59 +113,11 @@ async fn main() -> anyhow::Result<()> {
         app.engine_name
     );
 
-    let listener = TcpListener::bind(app.addr).await?;
-    info!("listening on {}", app.addr);
-
-    while let Ok((stream, _)) = listener.accept().await {
-        debug!("Connection established: {stream:?}");
-        tokio::select! {
-            _ = handle_connection(stream, kv.clone()) => {}
-        }
-    }
-    Ok(())
-}
-
-async fn handle_connection(
-    mut stream: tokio::net::TcpStream,
-    kv: std::sync::Arc<KvStore>,
-) -> anyhow::Result<()> {
-    // The client provides a size hint for how much data is incoming first.
-    // This allows us to use read_exact.
-    let size = stream.read_u64().await? as usize;
-    let mut buf = vec![0; size];
-    stream.read_exact(&mut buf).await?;
-    let action: Action = bincode::deserialize_from(buf.as_slice()).unwrap();
-
-    match &action {
-        Action::Set { key, value } => {
-            match kv.set(key.to_string(), value.to_string()).await {
-                Ok(_) => debug!("{key} set to {value}"),
-                Err(e) => error!("{}", e),
-            };
-        }
-        Action::Get { key } => match kv.get(key.to_string()).await {
-            Ok(Some(value)) => {
-                debug!("{key} has value: {value}");
-                stream.write_all(value.as_bytes()).await?;
-                stream.flush().await?;
-            }
-            Ok(None) => {
-                debug!("{key} not found");
-                stream.write_all("Key not found".as_bytes()).await?;
-                stream.flush().await?;
-            }
-            Err(e) => error!("{}", e),
-        },
-        Action::Remove { key } => match kv.remove(key.to_string()).await {
-            Ok(_) => debug!("{key} removed"),
-            Err(KvStoreError::RemoveOperationWithNoKey) => {
-                debug!("{key} not found");
-                stream.write_all("Key not found".as_bytes()).await?;
-                stream.flush().await?;
-            }
-            Err(e) => error!("{}", e),
-        },
-    }
+    info!("Listening on {}", app.addr);
+    tonic::transport::Server::builder()
+        .add_service(ActionServer::new(srv))
+        .serve(app.addr)
+        .await?;
 
     Ok(())
 }

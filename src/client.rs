@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
-/// Actions that can be performed by the client.
+// Actions that can be performed by the client.
 ///
 /// Subsequently, this means we can also serialize these actions to send them over
 /// the network to the server, which can then deserialize them and perform the

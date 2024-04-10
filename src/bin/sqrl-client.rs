@@ -1,7 +1,7 @@
 use clap::Parser;
+use sqrl::actions::action_client::ActionClient;
+use sqrl::actions::{GetRequest, SetRequest};
 use sqrl::client::Action;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -13,44 +13,34 @@ struct App {
     subcmd: Action,
 }
 
-/// Serialize the provided action and provided a size hint to the server on
-/// the provided [`TcpStream`].
-///
-/// [`TcpStream`]: tokio::net::TcpStream
-macro_rules! serialize_and_hint {
-    ($stream:expr, $action:expr) => {
-        let data = bincode::serialize(&$action)?;
-        $stream.write_u64(data.len() as u64).await?;
-        $stream.write_all(&data).await?;
-    };
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = App::parse();
-    let mut response = String::new();
+    let mut client = ActionClient::connect(format!("http://{}", cli.server)).await?;
 
     match cli.subcmd {
         Action::Set { key, value } => {
-            let mut stream = TcpStream::connect(cli.server).await?;
-            serialize_and_hint!(stream, Action::Set { key, value });
+            client
+                .set(tonic::Request::new(SetRequest { key, value }))
+                .await?;
         }
         Action::Get { key } => {
-            let mut stream = TcpStream::connect(cli.server).await?;
-            serialize_and_hint!(stream, Action::Get { key });
-            stream.read_to_string(&mut response).await?;
-            match response.as_str() {
-                "Key not found" => println!("{}", response),
-                _ => println!("{}", response),
+            let response = client.get(tonic::Request::new(GetRequest { key })).await?;
+            match response.into_inner().value {
+                Some(v) => println!("{}", v),
+                None => println!("Key not found"),
             }
         }
         Action::Remove { key } => {
-            let mut stream = TcpStream::connect(cli.server).await?;
-            serialize_and_hint!(stream, Action::Remove { key });
-            stream.read_to_string(&mut response).await?;
-            if response.as_str() == "Key not found" {
-                eprintln!("{}", response);
-                std::process::exit(1);
+            let response = client
+                .remove(tonic::Request::new(sqrl::actions::RemoveRequest { key }))
+                .await?;
+            match response.into_inner().success {
+                true => {}
+                false => {
+                    eprintln!("Key not found");
+                    std::process::exit(1);
+                }
             }
         }
     }
