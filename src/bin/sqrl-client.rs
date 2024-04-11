@@ -1,7 +1,7 @@
 use clap::Parser;
 
 use sqrl::action::Action;
-use sqrl::client::Client;
+use sqrl::client::{Client, RemoteNodeClient};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -16,7 +16,7 @@ struct App {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = App::parse();
-    let mut client = Client::new(cli.server).await?;
+    let mut client = RemoteNodeClient::new(cli.server).await?;
 
     match cli.subcmd {
         Action::Set { key, value } => {
