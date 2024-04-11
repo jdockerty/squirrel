@@ -154,10 +154,16 @@ impl KvsEngine for KvStore {
                 entry_file.seek(SeekFrom::Start(entry.offset as u64))?;
                 let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
                 match log_entry.value {
-                    Some(value) => Ok(Some(value)),
+                    Some(value) => {
+                        debug!(value, "Value exists");
+                        Ok(Some(value))
+                    }
                     // This is a tombstone value and equates to a deleted key and
                     // the "Key not found" scenario.
-                    None => Ok(None),
+                    None => {
+                        debug!(key, "Tombstone record found");
+                        Ok(None)
+                    }
                 }
             }
             None => Ok(None),
@@ -229,12 +235,13 @@ impl KvStore {
             log_location: path.clone(),
             max_log_file_size: MAX_LOG_FILE_SIZE.with(|f| *f),
         };
-        info!(compaction_trigger = store_config.max_log_file_size);
 
-        let mut store = KvStore::new(store_config);
+        let mut store = KvStore::new(store_config.clone());
         let log_level = std::env::var("KVS_LOG").unwrap_or("info".to_string());
         store.setup_logging(log_level)?;
+        info!("Initialising store");
         store.load()?;
+        debug!(compaction_trigger = store_config.max_log_file_size);
 
         debug!("Creating initial log file");
         store.set_active_log_handle()?;
