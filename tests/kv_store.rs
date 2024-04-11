@@ -38,9 +38,6 @@ async fn get_stored_value() -> Result<()> {
     Ok(())
 }
 
-// Should overwrite existent value
-// TODO(jdockerty): This test is flaky. I think its a race condition with the
-// set() of a value and instant get() over the 'await'
 #[tokio::test]
 async fn overwrite_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
