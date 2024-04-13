@@ -1,11 +1,9 @@
 use clap::Parser;
-use proto::action_server::Action as ActionSrv;
 use proto::action_server::ActionServer;
-use proto::{Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetRequest};
+use sqrl::KvServer;
 use sqrl::KvStore;
 use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
-use std::sync::Arc;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
 use tracing::info;
@@ -52,70 +50,10 @@ impl Display for Engine {
     }
 }
 
-#[derive(Clone)]
-struct KvServer {
-    pub store: Arc<KvStore>,
-}
-
-impl KvServer {
-    pub fn new<P>(path: P) -> anyhow::Result<Self>
-    where
-        P: Into<std::path::PathBuf>,
-    {
-        let store = Arc::new(KvStore::open(path)?);
-        Ok(Self { store })
-    }
-}
-
-#[tonic::async_trait]
-impl ActionSrv for KvServer {
-    async fn get(
-        &self,
-        req: tonic::Request<GetRequest>,
-    ) -> tonic::Result<tonic::Response<GetResponse>, tonic::Status> {
-        let req = req.into_inner();
-        let value = self.store.get(req.key).await.unwrap();
-        Ok(tonic::Response::new(GetResponse { value }))
-    }
-    async fn set(
-        &self,
-        req: tonic::Request<SetRequest>,
-    ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
-        let req = req.into_inner();
-        self.store.set(req.key, req.value).await.unwrap();
-        Ok(tonic::Response::new(Acknowledgement { success: true }))
-    }
-    async fn remove(
-        &self,
-        req: tonic::Request<RemoveRequest>,
-    ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
-        let req = req.into_inner();
-        match self.store.remove(req.key).await {
-            Ok(_) => Ok(tonic::Response::new(Acknowledgement { success: true })),
-            Err(_) => Ok(tonic::Response::new(Acknowledgement { success: false })),
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = App::parse();
-
     // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
     KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
-    let srv = KvServer::new(app.log_file)?;
-
-    info!(
-        "sqrl-server version: {}, engine: {}",
-        env!("CARGO_PKG_VERSION"),
-        app.engine_name
-    );
-
-    info!("Listening on {}", app.addr);
-    tonic::transport::Server::builder()
-        .add_service(ActionServer::new(srv))
-        .serve(app.addr)
-        .await?;
-
-    Ok(())
+    Ok(KvServer::new(app.log_file, app.addr)?.run().await?)
 }

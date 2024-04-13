@@ -20,10 +20,13 @@ mod error;
 /// Provides asynchronous cache replication over a network to a number of other
 /// cache nodes.
 mod replication;
+/// GRPC server which contains the key-value store.
+mod server;
 /// Implementation of the key-value store.
 mod store;
 pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
+pub use server::KvServer;
 pub use store::KvStore;
 pub mod action;
 pub mod client;
