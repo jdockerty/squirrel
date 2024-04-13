@@ -4,8 +4,7 @@ use crate::proto::{
 };
 use crate::KvStore;
 use crate::KvsEngine;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use tracing::info;
 
 #[derive(Clone)]
@@ -55,6 +54,7 @@ impl Action for KvServer {
             })),
         }
     }
+
     async fn set(
         &self,
         req: tonic::Request<SetRequest>,
@@ -63,6 +63,7 @@ impl Action for KvServer {
         self.store.set(req.key, req.value).await.unwrap();
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
+
     async fn remove(
         &self,
         req: tonic::Request<RemoveRequest>,

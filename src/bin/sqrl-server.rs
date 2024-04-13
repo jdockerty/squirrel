@@ -1,12 +1,9 @@
 use clap::Parser;
-use proto::action_server::ActionServer;
 use sqrl::KvServer;
 use sqrl::KvStore;
-use sqrl::KvsEngine;
 use sqrl::ENGINE_FILE;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
-use tracing::info;
 
 mod proto {
     tonic::include_proto!("actions");

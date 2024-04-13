@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
         Action::Get { key } => {
             let response = client.get(key).await?;
             match response {
-                Some(v) => println!("{}", v),
+                Some(v) => println!("{}", v.value.unwrap()),
                 None => println!("Key not found"),
             }
         }
