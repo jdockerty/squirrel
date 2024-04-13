@@ -71,6 +71,10 @@ struct LogEntry {
     /// The operation that was performed.
     operation: Operation,
 
+    /// Timestamp of the entry.
+    ///
+    /// This is also used as a version when replication is in-use. This means
+    /// the entry with the most recent timestamp wins.
     timestamp: i64,
     key: String,
     value: Option<String>,
@@ -84,6 +88,10 @@ struct KeydirEntry {
     /// The offset of the entry in the log file.
     offset: usize,
 
+    /// Timestamp of the entry.
+    ///
+    /// This is also used as a version when replication is in-use. This means
+    /// the entry with the most recent timestamp wins.
     timestamp: i64,
 }
 
