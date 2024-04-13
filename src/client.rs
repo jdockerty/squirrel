@@ -7,7 +7,7 @@ use crate::Result;
 
 /// A client used for interacting with the [`KvStore`] via gRPC requests.
 #[tonic::async_trait]
-pub trait Client {
+pub trait Client: Sync + Send {
     async fn get(&mut self, key: String) -> anyhow::Result<Option<String>>;
 
     async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement>;

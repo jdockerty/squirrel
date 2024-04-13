@@ -42,9 +42,9 @@ impl Default for StoreWriter {
 
 /// A key-value store inspired by Bitcask.
 ///
-/// Writes are appended to a Write-Ahead Log (WAL) and then held in memory using
-/// a keydir. In the event of a crash or [`Drop`], the keydir index is rebuilt
-/// using any log files that are found within the given directory.
+/// Writes are appended to a Write-Ahead Log (WAL) and then offset locations held
+/// in memory using a keydir. In the event of a crash or [`Drop`], the keydir
+/// index is rebuilt using any log files that are found within the given directory.
 #[derive(Clone, Debug)]
 pub struct KvStore {
     pub writer: Arc<RwLock<StoreWriter>>,
@@ -484,6 +484,42 @@ impl KvStore {
         let tracing_guard = tracing::subscriber::set_default(subscriber);
         self._tracing = Some(Arc::new(tracing_guard));
         Ok(())
+    }
+
+    /// Retrieve the value of a key from the store with its timestamp of entry.
+    /// If the key does not exist, then [`None`] is returned.
+    ///
+    /// This is typically used with replication as the timestamp acts as a version
+    /// number and conflict resolution mechanism.
+    pub async fn get_with_ts(&self, key: String) -> Result<Option<(String, i64)>> {
+        debug!(key, "Getting key");
+        match self.keydir.get(&key) {
+            Some(entry) => {
+                debug!(
+                    key = key,
+                    offset = entry.offset,
+                    "entry exists in {}",
+                    entry.file_id.display(),
+                );
+
+                let mut entry_file = std::fs::File::open(&entry.file_id)?;
+                entry_file.seek(SeekFrom::Start(entry.offset as u64))?;
+                let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
+                match log_entry.value {
+                    Some(value) => {
+                        debug!(value, "Value exists");
+                        Ok(Some((value, log_entry.timestamp)))
+                    }
+                    // This is a tombstone value and equates to a deleted key and
+                    // the "Key not found" scenario.
+                    None => {
+                        debug!(key, "Tombstone record found");
+                        Ok(None)
+                    }
+                }
+            }
+            None => Ok(None),
+        }
     }
 }
 

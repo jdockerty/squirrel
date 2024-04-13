@@ -1,20 +1,39 @@
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
 use crate::client::Client;
-use crate::proto::action_client::ActionClient;
-use crate::proto::{Acknowledgement, RemoveRequest};
-use crate::proto::{GetRequest, SetRequest};
-use crate::{KvsEngine, Result};
+use crate::proto::Acknowledgement;
+use crate::{KvStore, KvsEngine};
 
 /// Implementation of a [`Client`] with an awareness of multiple remote cache
 /// servers. These servers act as replication points and will be used to serve
 /// requests based on a quorum read/write sequence.
-struct ReplicationClient<S, C> {
-    local_cache: S,
-    remote_replicas: Vec<C>,
+#[derive(Clone, Debug)]
+struct ReplicationClient<C> {
+    local_store: Arc<Mutex<KvStore>>,
+    remote_replicas: Arc<Mutex<Vec<C>>>,
 }
 
-impl<S, C> Client for ReplicationClient<S, C> {
+#[tonic::async_trait]
+impl<C> Client for ReplicationClient<C>
+where
+    C: Client + Send + Sync,
+{
     async fn get(&mut self, key: String) -> anyhow::Result<Option<String>> {
-        Ok(None)
+        if let Some((local_value, local_timestamp)) = self
+            .local_store
+            .lock()
+            .await
+            .get_with_ts(key.clone())
+            .await?
+        {
+            for r in self.remote_replicas.lock().await.iter_mut() {
+                let remote_value = r.get(key.clone()).await?;
+            }
+            Ok(None)
+        } else {
+            Ok(None)
+        }
     }
 
     async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement> {
