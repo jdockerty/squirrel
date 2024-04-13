@@ -1,4 +1,5 @@
 use crate::engine::KvsEngine;
+use crate::proto::GetResponse;
 use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
@@ -145,9 +146,12 @@ impl KvsEngine for KvStore {
         Ok(())
     }
 
-    /// Retrieve the value of a key from the store.
+    /// Retrieve the value of a key from the store with a timestamp of its entry.
     /// If the key does not exist, then [`None`] is returned.
-    async fn get(&self, key: String) -> Result<Option<String>> {
+    ///
+    /// The timestamp is typically used with replication, as the value acts as
+    /// a version number and conflict resolution mechanism.
+    async fn get(&self, key: String) -> Result<Option<GetResponse>> {
         debug!(key, "Getting key");
         match self.keydir.get(&key) {
             Some(entry) => {
@@ -164,7 +168,10 @@ impl KvsEngine for KvStore {
                 match log_entry.value {
                     Some(value) => {
                         debug!(value, "Value exists");
-                        Ok(Some(value))
+                        Ok(Some(GetResponse {
+                            value: Some(value),
+                            timestamp: log_entry.timestamp,
+                        }))
                     }
                     // This is a tombstone value and equates to a deleted key and
                     // the "Key not found" scenario.
@@ -484,42 +491,6 @@ impl KvStore {
         let tracing_guard = tracing::subscriber::set_default(subscriber);
         self._tracing = Some(Arc::new(tracing_guard));
         Ok(())
-    }
-
-    /// Retrieve the value of a key from the store with its timestamp of entry.
-    /// If the key does not exist, then [`None`] is returned.
-    ///
-    /// This is typically used with replication as the timestamp acts as a version
-    /// number and conflict resolution mechanism.
-    pub async fn get_with_ts(&self, key: String) -> Result<Option<(String, i64)>> {
-        debug!(key, "Getting key");
-        match self.keydir.get(&key) {
-            Some(entry) => {
-                debug!(
-                    key = key,
-                    offset = entry.offset,
-                    "entry exists in {}",
-                    entry.file_id.display(),
-                );
-
-                let mut entry_file = std::fs::File::open(&entry.file_id)?;
-                entry_file.seek(SeekFrom::Start(entry.offset as u64))?;
-                let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
-                match log_entry.value {
-                    Some(value) => {
-                        debug!(value, "Value exists");
-                        Ok(Some((value, log_entry.timestamp)))
-                    }
-                    // This is a tombstone value and equates to a deleted key and
-                    // the "Key not found" scenario.
-                    None => {
-                        debug!(key, "Tombstone record found");
-                        Ok(None)
-                    }
-                }
-            }
-            None => Ok(None),
-        }
     }
 }
 
