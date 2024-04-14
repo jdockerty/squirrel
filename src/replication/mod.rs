@@ -1,3 +1,3 @@
-mod client;
+mod server;
 
-pub use client::ReplicationClient;
+pub use server::ReplicatedServer;

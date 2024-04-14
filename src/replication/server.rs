@@ -5,18 +5,18 @@ use tokio::sync::Mutex;
 
 use crate::client::Client;
 use crate::proto::{Acknowledgement, GetResponse};
-use crate::{KvServer, KvsEngine};
+use crate::{KvsEngine, StandaloneServer};
 
-/// Implementation of a [`Client`] with an awareness of multiple remote cache
-/// servers. These servers act as replication points and will be used to serve
-/// requests based on a quorum read/write sequence.
+/// Wrapped implementation of a [`StandaloneServer`] with an awareness of multiple
+/// remote stores. These servers act as replication points and will be used to serve
+/// requests based on a quorum read and write sequence.
 #[derive(Clone)]
-pub struct ReplicationClient<C> {
-    local_store: Arc<Mutex<KvServer>>,
+pub struct ReplicatedServer<C> {
+    local_store: Arc<Mutex<StandaloneServer>>,
     remote_replicas: Arc<Mutex<Vec<C>>>,
 }
 
-impl<C> ReplicationClient<C>
+impl<C> ReplicatedServer<C>
 where
     C: Client,
 {
@@ -25,14 +25,14 @@ where
         P: Into<PathBuf>,
     {
         Ok(Self {
-            local_store: Arc::new(Mutex::new(KvServer::new(path, addr)?)),
+            local_store: Arc::new(Mutex::new(StandaloneServer::new(path, addr)?)),
             remote_replicas: Arc::new(Mutex::new(clients)),
         })
     }
 }
 
 #[tonic::async_trait]
-impl<C> Client for ReplicationClient<C>
+impl<C> Client for ReplicatedServer<C>
 where
     C: Client + Send + Sync,
 {
@@ -70,5 +70,52 @@ where
 
     async fn remove(&mut self, key: String) -> anyhow::Result<Acknowledgement> {
         Ok(Acknowledgement { success: true })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{thread, time::Duration};
+
+    use crate::client::{self, Client, RemoteNodeClient, ReplicatedServer};
+    use tempfile::TempDir;
+
+    async fn client_one() -> RemoteNodeClient {
+        RemoteNodeClient::new("127.0.0.1:6000".to_string())
+            .await
+            .unwrap()
+    }
+
+    async fn client_two() -> RemoteNodeClient {
+        RemoteNodeClient::new("127.0.0.1:6001".to_string())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn general_replication() {
+        let node_one = ReplicatedServer::new(
+            vec![RemoteNodeClient::new("127.0.0.1:6001".to_string())
+                .await
+                .unwrap()],
+            TempDir::new().unwrap().into_path(),
+            "127.0.0.1:6000".parse().unwrap(),
+        );
+
+        let node_one = ReplicatedServer::new(
+            vec![RemoteNodeClient::new("127.0.0.1:6000".to_string())
+                .await
+                .unwrap()],
+            TempDir::new().unwrap().into_path(),
+            "127.0.0.1:6001".parse().unwrap(),
+        );
+
+        thread::sleep(Duration::from_secs(1));
+
+        //let mut client = client_one().await;
+        //client.set("key1".to_string(), "value1".to_string()).await.unwrap();
+
+        //let mut client = client_two().await;
+        //assert_eq!(client.get("key1".to_string()).await.unwrap().unwrap().value, Some("value1".to_string()));
     }
 }

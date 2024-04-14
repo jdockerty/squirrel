@@ -3,7 +3,7 @@ use tonic::transport::Channel;
 use crate::proto::action_client::ActionClient;
 use crate::proto::{Acknowledgement, GetResponse, RemoveRequest};
 use crate::proto::{GetRequest, SetRequest};
-pub use crate::replication::ReplicationClient;
+pub use crate::replication::ReplicatedServer;
 use crate::Result;
 
 /// A client used for interacting with the [`KvStore`] via gRPC requests.
