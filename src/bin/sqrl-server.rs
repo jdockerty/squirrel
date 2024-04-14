@@ -1,6 +1,6 @@
 use clap::Parser;
-use sqrl::KvServer;
 use sqrl::KvStore;
+use sqrl::StandaloneServer;
 use sqrl::ENGINE_FILE;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
@@ -52,5 +52,5 @@ async fn main() -> anyhow::Result<()> {
     let app = App::parse();
     // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
     KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
-    Ok(KvServer::new(app.log_file, app.addr)?.run().await?)
+    Ok(StandaloneServer::new(app.log_file, app.addr)?.run().await?)
 }

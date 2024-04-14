@@ -7,13 +7,15 @@ use crate::KvsEngine;
 use std::{net::SocketAddr, sync::Arc};
 use tracing::info;
 
+/// Server implementation which has no awareness of other server stores. It simply
+/// services requests from its own internal [`KvStore`].
 #[derive(Clone)]
-pub struct KvServer {
+pub struct StandaloneServer {
     pub store: Arc<KvStore>,
     pub addr: SocketAddr,
 }
 
-impl KvServer {
+impl StandaloneServer {
     pub fn new<P>(path: P, addr: SocketAddr) -> anyhow::Result<Self>
     where
         P: Into<std::path::PathBuf>,
@@ -37,7 +39,7 @@ impl KvServer {
 }
 
 #[tonic::async_trait]
-impl Action for KvServer {
+impl Action for StandaloneServer {
     async fn get(
         &self,
         req: tonic::Request<GetRequest>,

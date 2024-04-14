@@ -26,7 +26,7 @@ mod server;
 mod store;
 pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
-pub use server::KvServer;
+pub use server::StandaloneServer;
 pub use store::KvStore;
 pub mod action;
 pub mod client;
