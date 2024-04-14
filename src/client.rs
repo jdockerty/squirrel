@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use tonic::transport::Channel;
 
 use crate::proto::action_client::ActionClient;
@@ -30,8 +32,12 @@ pub struct RemoteNodeClient {
 }
 
 impl RemoteNodeClient {
+    /// Provides a new [`RemoteNodeClient`].
+    ///
+    /// The channel used for the connection is not utilised until first use.
     pub async fn new(addr: String) -> Result<Self> {
-        let inner = ActionClient::connect(format!("http://{}", addr)).await?;
+        let e = tonic::transport::Endpoint::from_str(&format!("http://{}", addr))?;
+        let inner = ActionClient::new(e.connect_lazy());
         Ok(Self { inner, addr })
     }
 }

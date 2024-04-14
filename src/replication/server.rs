@@ -1,9 +1,11 @@
+use prost::bytes::BufMut;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::client::Client;
+use crate::proto::action_client::ActionClient;
 use crate::proto::{Acknowledgement, GetResponse};
 use crate::{KvsEngine, StandaloneServer};
 
@@ -95,17 +97,13 @@ mod test {
     #[tokio::test]
     async fn general_replication() {
         let node_one = ReplicatedServer::new(
-            vec![RemoteNodeClient::new("127.0.0.1:6001".to_string())
-                .await
-                .unwrap()],
+            vec![client_two().await],
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6000".parse().unwrap(),
         );
 
         let node_one = ReplicatedServer::new(
-            vec![RemoteNodeClient::new("127.0.0.1:6000".to_string())
-                .await
-                .unwrap()],
+            vec![client_one().await],
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6001".parse().unwrap(),
         );
