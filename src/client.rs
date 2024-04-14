@@ -1,6 +1,6 @@
+use chrono::Utc;
 use std::str::FromStr;
 use tonic::transport::Channel;
-use tracing::info;
 
 use crate::proto::action_client::ActionClient;
 use crate::proto::{Acknowledgement, GetResponse, RemoveRequest};
@@ -46,8 +46,11 @@ impl RemoteNodeClient {
 #[tonic::async_trait]
 impl Client for RemoteNodeClient {
     async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement> {
-        info!("Set from RemoteNodeClient");
-        let req = tonic::Request::new(SetRequest { key, value });
+        let req = tonic::Request::new(SetRequest {
+            key,
+            value,
+            timestamp: Utc::now().timestamp(),
+        });
         let result = self.inner.set(req).await?;
         Ok(result.into_inner())
     }
