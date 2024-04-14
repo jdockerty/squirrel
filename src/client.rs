@@ -1,6 +1,6 @@
 use std::str::FromStr;
-
 use tonic::transport::Channel;
+use tracing::info;
 
 use crate::proto::action_client::ActionClient;
 use crate::proto::{Acknowledgement, GetResponse, RemoveRequest};
@@ -23,6 +23,7 @@ pub trait Client {
 /// Owing to this, it can be used for both the user-facing interaction with the
 /// service (client/server model) and when dealing with inter-node communication
 /// for replication.
+#[derive(Clone)]
 pub struct RemoteNodeClient {
     /// Inner gRPC client for actions that can be taken.
     inner: ActionClient<Channel>,
@@ -45,6 +46,7 @@ impl RemoteNodeClient {
 #[tonic::async_trait]
 impl Client for RemoteNodeClient {
     async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement> {
+        info!("Set from RemoteNodeClient");
         let req = tonic::Request::new(SetRequest { key, value });
         let result = self.inner.set(req).await?;
         Ok(result.into_inner())

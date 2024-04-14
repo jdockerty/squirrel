@@ -21,7 +21,7 @@ pub struct ReplicatedServer<C> {
 
 impl<C> ReplicatedServer<C>
 where
-    C: Client + Send,
+    C: Client + Clone + Send + Sync + 'static,
 {
     pub fn new<P>(clients: Vec<C>, path: P, addr: SocketAddr) -> anyhow::Result<Self>
     where
@@ -34,19 +34,17 @@ where
         })
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
+        info!("Listening on {}", self.addr);
         info!(
-            "Listening on {}\nsqrl-server version: {}, engine: sqrl",
-            self.addr,
+            "sqrl-server version: {}, engine: sqrl",
             env!("CARGO_PKG_VERSION"),
         );
-        let local = self.local_store.clone();
         tonic::transport::Server::builder()
-            .add_service(ActionServer::new(local.lock().await.clone()))
-            .serve(self.addr)
+            .add_service(ActionServer::new(self.clone()))
+            .serve(self.addr.clone())
             .await
             .unwrap();
-        info!("Started gRPC server");
         Ok(())
     }
 }
@@ -100,6 +98,9 @@ where
         req: tonic::Request<SetRequest>,
     ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         info!("Replicated set");
+        let req = req.into_inner();
+        let local = self.local_store.lock().await;
+        let local_value = local.store.set(req.key, req.value).await.unwrap();
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
 
@@ -152,7 +153,7 @@ mod test {
         tokio::spawn(async move { node_two.run().await.unwrap() });
 
         // Let the nodes startup
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(1500));
 
         // Connect to node one
         let mut client = client_one().await;
