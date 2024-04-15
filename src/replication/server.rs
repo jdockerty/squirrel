@@ -229,18 +229,14 @@ mod test {
         )
         .unwrap();
         // Binds to 6001 and connects to 6000 for replication
-        let node_two = ReplicatedServer::new(
-            [client_one().await.into(), client_three().await.into()],
-            "node_two".to_string(),
+        let node_two = StandaloneServer::new(
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6001".parse().unwrap(),
         )
         .unwrap();
 
         // Binds to 6002 and connects to 6000 for replication
-        let node_three = ReplicatedServer::new(
-            [client_one().await.into(), client_two().await.into()],
-            "node_three".to_string(),
+        let node_three = StandaloneServer::new(
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6002".parse().unwrap(),
         )
@@ -253,16 +249,24 @@ mod test {
         // Let the nodes startup
         thread::sleep(Duration::from_millis(1500));
 
-        // Connect to node one
-        let mut client = client_one().await;
-        client
+        // Connect to the replication node
+        let mut replicated_client = client_one().await;
+        replicated_client
             .set("key1".to_string(), "value1".to_string())
             .await
             .unwrap();
 
-        let mut client = client_two().await;
+        // Wait for some replication to occur.
+        thread::sleep(Duration::from_millis(250));
+
+        let mut standalone_client = client_two().await;
         assert_eq!(
-            client.get("key1".to_string()).await.unwrap().unwrap().value,
+            standalone_client
+                .get("key1".to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
             Some("value1".to_string()),
             "No replication"
         );
