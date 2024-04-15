@@ -10,6 +10,7 @@ name = "sqrl_bench"
 harness = false
 
 [features]
+default = ["replication"]
 replication = []
 
 

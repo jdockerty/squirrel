@@ -19,7 +19,7 @@ mod engine;
 mod error;
 /// Provides asynchronous cache replication over a network to a number of other
 /// cache nodes.
-mod replication;
+pub mod replication;
 /// GRPC server which contains the key-value store.
 mod server;
 /// Implementation of the key-value store.

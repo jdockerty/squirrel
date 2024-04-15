@@ -7,3 +7,18 @@
 mod server;
 
 pub use server::ReplicatedServer;
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum Mode {
+    Leader,
+    Follower,
+}
+
+impl From<Mode> for clap::builder::OsStr {
+    fn from(value: Mode) -> Self {
+        match value {
+            Mode::Leader => "leader".into(),
+            Mode::Follower => "follower".into(),
+        }
+    }
+}

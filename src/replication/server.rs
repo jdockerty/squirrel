@@ -139,7 +139,7 @@ impl Action for ReplicatedServer {
                 .set(req.key.clone(), req.value.clone())
                 .await
                 .unwrap();
-            info!("Replicating request to known replicas");
+            info!("Replicating request to replicas");
             client_one
                 .lock()
                 .await
@@ -153,7 +153,7 @@ impl Action for ReplicatedServer {
                 .await
                 .unwrap();
         } else {
-            info!("Replicating local value to known replicas");
+            info!("Replicating local value to replicas");
             client_one
                 .lock()
                 .await
