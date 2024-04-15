@@ -49,7 +49,7 @@ impl ReplicatedServer {
         );
         tonic::transport::Server::builder()
             .add_service(ActionServer::new(self.clone()))
-            .serve(self.addr.clone())
+            .serve(self.addr)
             .await
             .unwrap();
         Ok(())
