@@ -10,15 +10,11 @@ use crate::proto::{Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetR
 use crate::{KvsEngine, StandaloneServer};
 
 /// Wrapped implementation of a [`StandaloneServer`] with an awareness of multiple
-/// remote stores. These servers act as replication points and will be used to serve
-/// requests based on a quorum read and write sequence.
+/// remote stores. This server will replicate values to known servers through its
+/// internally held [`RemoteNodeClient`]'s.
 #[derive(Clone)]
 pub struct ReplicatedServer {
-    /// Identifier for the server.
-    ///
-    /// This is used for troubleshooting/debugging purposes.
-    name: String,
-    local_store: Arc<StandaloneServer>,
+    server: Arc<StandaloneServer>,
     addr: SocketAddr,
 
     /// [`Client`] implementations which provide access to remote replicas.
@@ -32,7 +28,6 @@ pub struct ReplicatedServer {
 impl ReplicatedServer {
     pub fn new<P>(
         clients: [Mutex<RemoteNodeClient>; 2],
-        name: String,
         path: P,
         addr: SocketAddr,
     ) -> anyhow::Result<Self>
@@ -40,9 +35,8 @@ impl ReplicatedServer {
         P: Into<PathBuf>,
     {
         Ok(Self {
-            name,
             addr,
-            local_store: Arc::new(StandaloneServer::new(path, addr)?),
+            server: Arc::new(StandaloneServer::new(path, addr)?),
             remote_replicas: Arc::new(clients),
         })
     }
@@ -68,10 +62,9 @@ impl Action for ReplicatedServer {
         &self,
         req: tonic::Request<GetRequest>,
     ) -> tonic::Result<tonic::Response<GetResponse>, tonic::Status> {
-        info!("{} Replicated get", self.name);
         let req = req.into_inner();
         let key = req.key.clone();
-        let mut response = match self.local_store.store.get(key).await.unwrap() {
+        let mut response = match self.server.store.get(key).await.unwrap() {
             Some(r) => r,
             None => GetResponse {
                 value: None,
@@ -83,11 +76,9 @@ impl Action for ReplicatedServer {
         let client_two = &self.remote_replicas[1];
 
         if let Some(remote_response) = client_one.lock().await.get(req.key.clone()).await.unwrap() {
-            info!("{} response from c1 {:?}", self.name, remote_response);
             if remote_response.timestamp > response.timestamp {
-                info!("{} Client one has greater timestamp", self.name);
                 response = remote_response.clone();
-                self.local_store
+                self.server
                     .store
                     .set(req.key.clone(), remote_response.value.clone().unwrap())
                     .await
@@ -101,11 +92,9 @@ impl Action for ReplicatedServer {
             }
         }
         if let Some(remote_response) = client_two.lock().await.get(req.key.clone()).await.unwrap() {
-            info!("{} response from c2 {:?}", self.name, remote_response);
             if remote_response.timestamp > response.timestamp {
-                info!("{} Client two has greater timestamp", self.name);
                 response = remote_response.clone();
-                self.local_store
+                self.server
                     .store
                     .set(req.key.clone(), remote_response.value.clone().unwrap())
                     .await
@@ -125,12 +114,11 @@ impl Action for ReplicatedServer {
         &self,
         req: tonic::Request<SetRequest>,
     ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
-        info!("{} Replicated set", self.name);
         let req = req.into_inner();
-        let local = match self.local_store.store.get(req.key.clone()).await.unwrap() {
+        let local = match self.server.store.get(req.key.clone()).await.unwrap() {
             Some(r) => r,
             None => {
-                self.local_store
+                self.server
                     .store
                     .set(req.key.clone(), req.value.clone())
                     .await
@@ -145,7 +133,8 @@ impl Action for ReplicatedServer {
         let client_two = &self.remote_replicas[1];
 
         if req.timestamp > local.timestamp {
-            self.local_store
+            info!("Updating local node");
+            self.server
                 .store
                 .set(req.key.clone(), req.value.clone())
                 .await
@@ -164,7 +153,7 @@ impl Action for ReplicatedServer {
                 .await
                 .unwrap();
         } else {
-            info!("Replicating local to known replicas");
+            info!("Replicating local value to known replicas");
             client_one
                 .lock()
                 .await
@@ -218,31 +207,31 @@ mod test {
             .unwrap()
     }
 
-    #[tokio::test]
-    async fn general_replication() {
-        // Binds to 6000 and connects to 6001 for replication
-        let node_one = ReplicatedServer::new(
+    async fn replication_node(addr: String) -> ReplicatedServer {
+        ReplicatedServer::new(
             [client_two().await.into(), client_three().await.into()],
-            "node_one".to_string(),
             TempDir::new().unwrap().into_path(),
-            "127.0.0.1:6000".parse().unwrap(),
+            addr.parse().unwrap(),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    async fn follower_node(addr: String) -> StandaloneServer {
+        StandaloneServer::new(TempDir::new().unwrap().into_path(), addr.parse().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn replication_set() {
+        // Binds to 6000 and connects to 6001 for replication
+        let replication_node = replication_node("127.0.0.1:6000".to_string()).await;
+
         // Binds to 6001 and connects to 6000 for replication
-        let node_two = StandaloneServer::new(
-            TempDir::new().unwrap().into_path(),
-            "127.0.0.1:6001".parse().unwrap(),
-        )
-        .unwrap();
+        let node_two = follower_node("127.0.0.1:6001".to_string()).await;
 
         // Binds to 6002 and connects to 6000 for replication
-        let node_three = StandaloneServer::new(
-            TempDir::new().unwrap().into_path(),
-            "127.0.0.1:6002".parse().unwrap(),
-        )
-        .unwrap();
+        let node_three = follower_node("127.0.0.1:6002".to_string()).await;
 
-        tokio::spawn(async move { node_one.run().await.unwrap() });
+        tokio::spawn(async move { replication_node.run().await.unwrap() });
         tokio::spawn(async move { node_two.run().await.unwrap() });
         tokio::spawn(async move { node_three.run().await.unwrap() });
 
