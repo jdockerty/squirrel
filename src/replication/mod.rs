@@ -1,7 +1,8 @@
-//! Replication is achieved through a simplistic replicator/follower model.
+//! Replication is achieved through a simplistic leader/follower model.
 //!
-//! The [`ReplicatedServer`] is the designated replicator and will use its internally
-//! configured [`RemoteNodeClient`]'s to update/retrieve values from remote stores.
+//! The [`ReplicatedServer`] is the designated leader and will use its internally
+//! configured [`RemoteNodeClient`]'s to update and retrieve values from remote
+//! stores.
 
 mod server;
 
