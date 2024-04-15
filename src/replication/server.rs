@@ -175,6 +175,20 @@ impl Action for ReplicatedServer {
         req: tonic::Request<RemoveRequest>,
     ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         info!("Replicated remove");
+        let req = req.into_inner();
+        self.server.store.remove(req.key.clone()).await.unwrap();
+        self.remote_replicas[0]
+            .lock()
+            .await
+            .remove(req.key.clone())
+            .await
+            .unwrap();
+        self.remote_replicas[1]
+            .lock()
+            .await
+            .remove(req.key.clone())
+            .await
+            .unwrap();
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
 }
@@ -221,43 +235,98 @@ mod test {
     }
 
     #[tokio::test]
-    async fn replication_set() {
-        // Binds to 6000 and connects to 6001 for replication
+    async fn replication() {
+        // Binds to 6000 and connects to the follower nodes for replication.
         let replication_node = replication_node("127.0.0.1:6000".to_string()).await;
 
-        // Binds to 6001 and connects to 6000 for replication
         let node_two = follower_node("127.0.0.1:6001".to_string()).await;
-
-        // Binds to 6002 and connects to 6000 for replication
         let node_three = follower_node("127.0.0.1:6002".to_string()).await;
 
         tokio::spawn(async move { replication_node.run().await.unwrap() });
         tokio::spawn(async move { node_two.run().await.unwrap() });
         tokio::spawn(async move { node_three.run().await.unwrap() });
 
+        // Connect to the replication node
+        let mut replicated_client = client_one().await;
+        let mut standalone_client_one = client_two().await;
+        let mut standalone_client_two = client_three().await;
+
+        let wait_for_replication = || {
+            thread::sleep(Duration::from_secs(1));
+        };
+
         // Let the nodes startup
         thread::sleep(Duration::from_millis(1500));
 
-        // Connect to the replication node
-        let mut replicated_client = client_one().await;
         replicated_client
             .set("key1".to_string(), "value1".to_string())
             .await
             .unwrap();
 
-        // Wait for some replication to occur.
-        thread::sleep(Duration::from_millis(250));
+        wait_for_replication();
 
-        let mut standalone_client = client_two().await;
         assert_eq!(
-            standalone_client
+            standalone_client_one
                 .get("key1".to_string())
                 .await
                 .unwrap()
                 .unwrap()
                 .value,
             Some("value1".to_string()),
-            "No replication"
+            "No replication for initial value"
+        );
+        assert_eq!(
+            standalone_client_one.get("key2".to_string()).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            standalone_client_two
+                .get("key1".to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            Some("value1".to_string()),
+            "No replication for initial value"
+        );
+
+        replicated_client
+            .set("key1".to_string(), "overwritten".to_string())
+            .await
+            .unwrap();
+        wait_for_replication();
+        assert_eq!(
+            standalone_client_one
+                .get("key1".to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            Some("overwritten".to_string()),
+            "No replication for overwritten value"
+        );
+        assert_eq!(
+            standalone_client_two
+                .get("key1".to_string())
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            Some("overwritten".to_string()),
+            "No replication for overwritten value"
+        );
+
+        replicated_client.remove("key1".to_string()).await.unwrap();
+        wait_for_replication();
+        assert_eq!(
+            standalone_client_one.get("key1".to_string()).await.unwrap(),
+            None,
+            "No replication for removal"
+        );
+        assert_eq!(
+            standalone_client_two.get("key1".to_string()).await.unwrap(),
+            None,
+            "No replication for removal"
         );
     }
 }
