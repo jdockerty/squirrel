@@ -135,14 +135,46 @@ impl Action for ReplicatedServer {
                     .set(req.key.clone(), req.value.clone())
                     .await
                     .unwrap();
-                return Ok(tonic::Response::new(Acknowledgement { success: true }));
+                GetResponse {
+                    value: None,
+                    timestamp: 0,
+                }
             }
         };
+        let client_one = &self.remote_replicas[0];
+        let client_two = &self.remote_replicas[1];
 
         if req.timestamp > local.timestamp {
             self.local_store
                 .store
                 .set(req.key.clone(), req.value.clone())
+                .await
+                .unwrap();
+            info!("Replicating request to known replicas");
+            client_one
+                .lock()
+                .await
+                .set(req.key.clone(), req.value.clone())
+                .await
+                .unwrap();
+            client_two
+                .lock()
+                .await
+                .set(req.key.clone(), req.value.clone())
+                .await
+                .unwrap();
+        } else {
+            info!("Replicating local to known replicas");
+            client_one
+                .lock()
+                .await
+                .set(req.key.clone(), local.value.clone().unwrap())
+                .await
+                .unwrap();
+            client_two
+                .lock()
+                .await
+                .set(req.key.clone(), local.value.clone().unwrap())
                 .await
                 .unwrap();
         }
@@ -162,7 +194,10 @@ impl Action for ReplicatedServer {
 mod test {
     use std::{thread, time::Duration};
 
-    use crate::client::{Client, RemoteNodeClient, ReplicatedServer};
+    use crate::{
+        client::{Client, RemoteNodeClient, ReplicatedServer},
+        StandaloneServer,
+    };
     use tempfile::TempDir;
 
     async fn client_one() -> RemoteNodeClient {

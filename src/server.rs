@@ -25,9 +25,9 @@ impl StandaloneServer {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
+        info!("Listening on {}", self.addr);
         info!(
-            "Listening on {}\nsqrl-server version: {}, engine: sqrl",
-            self.addr,
+            "sqrl-server version: {}, engine: sqrl",
             env!("CARGO_PKG_VERSION"),
         );
         tonic::transport::Server::builder()
