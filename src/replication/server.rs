@@ -1,10 +1,10 @@
-use futures::future::Either;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::client::Client;
+use crate::client::{Client, RemoteNodeClient};
 use crate::proto::action_server::{Action, ActionServer};
 use crate::proto::{Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetRequest};
 use crate::{KvsEngine, StandaloneServer};
@@ -13,7 +13,7 @@ use crate::{KvsEngine, StandaloneServer};
 /// remote stores. These servers act as replication points and will be used to serve
 /// requests based on a quorum read and write sequence.
 #[derive(Clone)]
-pub struct ReplicatedServer<C> {
+pub struct ReplicatedServer {
     /// Identifier for the server.
     ///
     /// This is used for troubleshooting/debugging purposes.
@@ -26,14 +26,16 @@ pub struct ReplicatedServer<C> {
     /// # Notes
     /// This is locked at 2 replicas for simplicitiy in handling the replication
     /// logic of the stores.
-    remote_replicas: Arc<[C; 2]>,
+    remote_replicas: Arc<[Mutex<RemoteNodeClient>; 2]>,
 }
 
-impl<C> ReplicatedServer<C>
-where
-    C: Client + Clone + Send + Sync + 'static,
-{
-    pub fn new<P>(clients: [C; 2], name: String, path: P, addr: SocketAddr) -> anyhow::Result<Self>
+impl ReplicatedServer {
+    pub fn new<P>(
+        clients: [Mutex<RemoteNodeClient>; 2],
+        name: String,
+        path: P,
+        addr: SocketAddr,
+    ) -> anyhow::Result<Self>
     where
         P: Into<PathBuf>,
     {
@@ -61,10 +63,7 @@ where
 }
 
 #[tonic::async_trait]
-impl<C> Action for ReplicatedServer<C>
-where
-    C: Client + Send + Sync + 'static,
-{
+impl Action for ReplicatedServer {
     async fn get(
         &self,
         req: tonic::Request<GetRequest>,
@@ -72,8 +71,7 @@ where
         info!("{} Replicated get", self.name);
         let req = req.into_inner();
         let key = req.key.clone();
-        let guard = &self.local_store;
-        let response = match guard.store.get(key).await.unwrap() {
+        let mut response = match self.local_store.store.get(key).await.unwrap() {
             Some(r) => r,
             None => GetResponse {
                 value: None,
@@ -84,6 +82,42 @@ where
         let client_one = &self.remote_replicas[0];
         let client_two = &self.remote_replicas[1];
 
+        if let Some(remote_response) = client_one.lock().await.get(req.key.clone()).await.unwrap() {
+            info!("{} response from c1 {:?}", self.name, remote_response);
+            if remote_response.timestamp > response.timestamp {
+                info!("{} Client one has greater timestamp", self.name);
+                response = remote_response.clone();
+                self.local_store
+                    .store
+                    .set(req.key.clone(), remote_response.value.clone().unwrap())
+                    .await
+                    .unwrap();
+                client_two
+                    .lock()
+                    .await
+                    .set(req.key.clone(), remote_response.value.unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
+        if let Some(remote_response) = client_two.lock().await.get(req.key.clone()).await.unwrap() {
+            info!("{} response from c2 {:?}", self.name, remote_response);
+            if remote_response.timestamp > response.timestamp {
+                info!("{} Client two has greater timestamp", self.name);
+                response = remote_response.clone();
+                self.local_store
+                    .store
+                    .set(req.key.clone(), remote_response.value.clone().unwrap())
+                    .await
+                    .unwrap();
+                client_one
+                    .lock()
+                    .await
+                    .set(req.key.clone(), remote_response.value.unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
         Ok(tonic::Response::new(response))
     }
 
@@ -93,11 +127,25 @@ where
     ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         info!("{} Replicated set", self.name);
         let req = req.into_inner();
-        self.local_store
-            .store
-            .set(req.key.clone(), req.value.clone())
-            .await
-            .unwrap();
+        let local = match self.local_store.store.get(req.key.clone()).await.unwrap() {
+            Some(r) => r,
+            None => {
+                self.local_store
+                    .store
+                    .set(req.key.clone(), req.value.clone())
+                    .await
+                    .unwrap();
+                return Ok(tonic::Response::new(Acknowledgement { success: true }));
+            }
+        };
+
+        if req.timestamp > local.timestamp {
+            self.local_store
+                .store
+                .set(req.key.clone(), req.value.clone())
+                .await
+                .unwrap();
+        }
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
 
@@ -139,7 +187,7 @@ mod test {
     async fn general_replication() {
         // Binds to 6000 and connects to 6001 for replication
         let node_one = ReplicatedServer::new(
-            [client_two().await, client_three().await],
+            [client_two().await.into(), client_three().await.into()],
             "node_one".to_string(),
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6000".parse().unwrap(),
@@ -147,17 +195,17 @@ mod test {
         .unwrap();
         // Binds to 6001 and connects to 6000 for replication
         let node_two = ReplicatedServer::new(
-            [client_one().await, client_three().await],
+            [client_one().await.into(), client_three().await.into()],
             "node_two".to_string(),
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6001".parse().unwrap(),
         )
         .unwrap();
 
-        // Binds to 6001 and connects to 6000 for replication
+        // Binds to 6002 and connects to 6000 for replication
         let node_three = ReplicatedServer::new(
-            [client_one().await, client_two().await],
-            "node_two".to_string(),
+            [client_one().await.into(), client_two().await.into()],
+            "node_three".to_string(),
             TempDir::new().unwrap().into_path(),
             "127.0.0.1:6002".parse().unwrap(),
         )
@@ -181,7 +229,7 @@ mod test {
         assert_eq!(
             client.get("key1".to_string()).await.unwrap().unwrap().value,
             Some("value1".to_string()),
-            "No replication from node one to node two"
+            "No replication"
         );
     }
 }
