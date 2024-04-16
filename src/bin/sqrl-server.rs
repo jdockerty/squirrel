@@ -1,4 +1,5 @@
 use clap::Parser;
+use futures::StreamExt;
 use sqrl::client::RemoteNodeClient;
 use sqrl::replication;
 use sqrl::replication::ReplicatedServer;
@@ -7,7 +8,7 @@ use sqrl::StandaloneServer;
 use sqrl::ENGINE_FILE;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
-use tokio::sync::Mutex;
+use tracing::{debug, warn};
 
 mod proto {
     tonic::include_proto!("actions");
@@ -75,11 +76,15 @@ async fn main() -> anyhow::Result<()> {
                 2,
                 "Only 2 followers are configurable at present"
             );
-            let clients = [
-                Mutex::new(RemoteNodeClient::new(app.followers[0].clone()).await?),
-                Mutex::new(RemoteNodeClient::new(app.followers[1].clone()).await?),
-            ];
-            ReplicatedServer::new(clients, app.log_file, app.addr)?
+            let clients = futures::stream::iter(app.followers.iter())
+                .filter_map(|f| async move { RemoteNodeClient::new(f.to_string()).await.ok() })
+                .collect::<Vec<RemoteNodeClient>>()
+                .await;
+            debug!("Replicating to {} followers", clients.len());
+            if clients.len() > 3 {
+                warn!("Replicating to many followers can greatly impact write performance");
+            }
+            ReplicatedServer::new(clients.into(), app.log_file, app.addr)?
                 .run()
                 .await
         }

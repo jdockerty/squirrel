@@ -1,8 +1,9 @@
+use futures::StreamExt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::client::{Client, RemoteNodeClient};
 use crate::proto::action_server::{Action, ActionServer};
@@ -22,12 +23,12 @@ pub struct ReplicatedServer {
     /// # Notes
     /// This is locked at 2 replicas for simplicitiy in handling the replication
     /// logic of the stores.
-    remote_replicas: Arc<[Mutex<RemoteNodeClient>; 2]>,
+    remote_replicas: Arc<Mutex<Vec<RemoteNodeClient>>>,
 }
 
 impl ReplicatedServer {
     pub fn new<P>(
-        clients: [Mutex<RemoteNodeClient>; 2],
+        clients: Mutex<Vec<RemoteNodeClient>>,
         path: P,
         addr: SocketAddr,
     ) -> anyhow::Result<Self>
@@ -64,49 +65,13 @@ impl Action for ReplicatedServer {
     ) -> tonic::Result<tonic::Response<GetResponse>, tonic::Status> {
         let req = req.into_inner();
         let key = req.key.clone();
-        let mut response = match self.server.store.get(key).await.unwrap() {
+        let response = match self.server.store.get(key).await.unwrap() {
             Some(r) => r,
             None => GetResponse {
                 value: None,
                 timestamp: 0,
             },
         };
-
-        let client_one = &self.remote_replicas[0];
-        let client_two = &self.remote_replicas[1];
-
-        if let Some(remote_response) = client_one.lock().await.get(req.key.clone()).await.unwrap() {
-            if remote_response.timestamp > response.timestamp {
-                response = remote_response.clone();
-                self.server
-                    .store
-                    .set(req.key.clone(), remote_response.value.clone().unwrap())
-                    .await
-                    .unwrap();
-                client_two
-                    .lock()
-                    .await
-                    .set(req.key.clone(), remote_response.value.unwrap())
-                    .await
-                    .unwrap();
-            }
-        }
-        if let Some(remote_response) = client_two.lock().await.get(req.key.clone()).await.unwrap() {
-            if remote_response.timestamp > response.timestamp {
-                response = remote_response.clone();
-                self.server
-                    .store
-                    .set(req.key.clone(), remote_response.value.clone().unwrap())
-                    .await
-                    .unwrap();
-                client_one
-                    .lock()
-                    .await
-                    .set(req.key.clone(), remote_response.value.unwrap())
-                    .await
-                    .unwrap();
-            }
-        }
         Ok(tonic::Response::new(response))
     }
 
@@ -115,58 +80,20 @@ impl Action for ReplicatedServer {
         req: tonic::Request<SetRequest>,
     ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         let req = req.into_inner();
-        let local = match self.server.store.get(req.key.clone()).await.unwrap() {
-            Some(r) => r,
-            None => {
-                self.server
-                    .store
-                    .set(req.key.clone(), req.value.clone())
-                    .await
-                    .unwrap();
-                GetResponse {
-                    value: None,
-                    timestamp: 0,
-                }
-            }
-        };
-        let client_one = &self.remote_replicas[0];
-        let client_two = &self.remote_replicas[1];
+        debug!("Setting value to local store");
+        self.server
+            .store
+            .set(req.key.clone(), req.value.clone())
+            .await
+            .unwrap();
 
-        if req.timestamp > local.timestamp {
-            info!("Updating local node");
-            self.server
-                .store
-                .set(req.key.clone(), req.value.clone())
-                .await
-                .unwrap();
-            info!("Replicating request to replicas");
-            client_one
-                .lock()
-                .await
-                .set(req.key.clone(), req.value.clone())
-                .await
-                .unwrap();
-            client_two
-                .lock()
-                .await
-                .set(req.key.clone(), req.value.clone())
-                .await
-                .unwrap();
-        } else {
-            info!("Replicating local value to replicas");
-            client_one
-                .lock()
-                .await
-                .set(req.key.clone(), local.value.clone().unwrap())
-                .await
-                .unwrap();
-            client_two
-                .lock()
-                .await
-                .set(req.key.clone(), local.value.clone().unwrap())
-                .await
-                .unwrap();
-        }
+        debug!("Replicating to remote replicas");
+        futures::stream::iter(self.remote_replicas.lock().await.iter_mut())
+            .for_each(|r| async {
+                r.set(req.key.clone(), req.value.clone()).await.unwrap();
+            })
+            .await;
+
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
 
@@ -177,18 +104,11 @@ impl Action for ReplicatedServer {
         info!("Replicated remove");
         let req = req.into_inner();
         self.server.store.remove(req.key.clone()).await.unwrap();
-        self.remote_replicas[0]
-            .lock()
-            .await
-            .remove(req.key.clone())
-            .await
-            .unwrap();
-        self.remote_replicas[1]
-            .lock()
-            .await
-            .remove(req.key.clone())
-            .await
-            .unwrap();
+        futures::stream::iter(self.remote_replicas.lock().await.iter_mut())
+            .for_each(|r| async {
+                r.remove(req.key.clone()).await.unwrap();
+            })
+            .await;
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
 }
@@ -223,7 +143,7 @@ mod test {
 
     async fn replication_node(addr: String) -> ReplicatedServer {
         ReplicatedServer::new(
-            [client_two().await.into(), client_three().await.into()],
+            Vec::from_iter([client_two().await, client_three().await]).into(),
             TempDir::new().unwrap().into_path(),
             addr.parse().unwrap(),
         )

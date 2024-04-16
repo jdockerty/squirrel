@@ -1,8 +1,12 @@
 //! Replication is achieved through a simplistic leader/follower model.
 //!
 //! The [`ReplicatedServer`] is the designated leader and will use its internally
-//! configured [`RemoteNodeClient`]'s to update and retrieve values from remote
-//! stores.
+//! configured [`RemoteNodeClient`]'s to replicate `set` and `remove` calls from
+//! remote stores.
+//!
+//! The expectation is that the [`ReplicatedServer`] is the direct contact for
+//! updates and whilst any node can serve a `get`, there is no guarantee that
+//! the read is not stale.
 
 mod server;
 
