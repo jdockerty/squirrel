@@ -19,7 +19,7 @@ sequenceDiagram
     squirrel->>WAL: Append 'LogEntry'
     note right of WAL: LogEntry consists of<br/>key (k), value (v)<br/> and metadata
     WAL-->>squirrel: Acknowledged
-    squirrel->>keydir: Create KeydirEntry
+    squirrel->>keydir: Upsert KeydirEntry
     note right of keydir: Maps key to <br/>log file and offset
     keydir-->>squirrel: Acknowledged
 ```
