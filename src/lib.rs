@@ -1,11 +1,14 @@
 //! A key-value store, inspired by [Bitcask](https://en.wikipedia.org/wiki/Bitcask).
 //!
 //! This crate provides a simple key-value store that persists data to disk by
-//! utilising a write-ahead log (WAL) and an in-memory hash map which maintains
-//! an index of keys to their positions in the log or compacted log files.
+//! utilising a write-ahead log (WAL) and a concurrent in-memory hashmap which
+//! maintains an index of keys to their offset positions in the active and compacted
+//! log files.
+//!
+//! The internal concurrent hashmap is provided by [`DashMap`].
+//!
+//! [`DashMap`]: https://docs.rs/dashmap/latest/dashmap
 
-/// A thin TCP client to interact with the key-value store server.
-pub mod client;
 /// Generic trait implementation for pluggable engines.
 ///
 /// # Note
@@ -14,13 +17,21 @@ pub mod client;
 mod engine;
 /// Errors that may originate from operating the store.
 mod error;
+/// Provides asynchronous cache replication over a network to a number of other
+/// cache nodes.
+pub mod replication;
+/// GRPC server which contains the key-value store.
+mod server;
 /// Implementation of the key-value store.
 mod store;
 pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
+pub use server::StandaloneServer;
 pub use store::KvStore;
+pub mod action;
+pub mod client;
 
-pub mod actions {
+mod proto {
     tonic::include_proto!("actions");
 }
 

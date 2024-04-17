@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::Result;
+use crate::{proto::GetResponse, Result};
 
 /// Generic trait implementation for pluggable storage engines outside of the one
 /// implemented by this crate.
@@ -11,8 +11,8 @@ use crate::Result;
 /// However, it would be possible to implement other engines too, such as `sled`.
 ///
 /// [`KvStore`]: crate::store::KvStore
-pub trait KvsEngine: Clone + Send + 'static {
+pub trait KvsEngine: Clone + Send + Sync + 'static {
     fn set(&self, key: String, value: String) -> impl Future<Output = Result<()>>;
-    fn get(&self, key: String) -> impl Future<Output = Result<Option<String>>>;
+    fn get(&self, key: String) -> impl Future<Output = Result<Option<GetResponse>>>;
     fn remove(&self, key: String) -> impl Future<Output = Result<()>>;
 }

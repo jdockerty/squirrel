@@ -1,20 +1,73 @@
-use clap::Subcommand;
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
+use std::str::FromStr;
+use tonic::transport::Channel;
 
-// Actions that can be performed by the client.
+use crate::proto::action_client::ActionClient;
+use crate::proto::{Acknowledgement, GetResponse, RemoveRequest};
+use crate::proto::{GetRequest, SetRequest};
+pub use crate::replication::ReplicatedServer;
+use crate::Result;
+
+/// A client used for interacting with the [`KvStore`] via gRPC requests.
+#[tonic::async_trait]
+pub trait Client {
+    async fn get(&mut self, key: String) -> anyhow::Result<Option<GetResponse>>;
+
+    async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement>;
+
+    async fn remove(&mut self, key: String) -> anyhow::Result<Acknowledgement>;
+}
+
+/// A [`RemoteNodeClient`] is for interacting with a cache node over the network.
 ///
-/// Subsequently, this means we can also serialize these actions to send them over
-/// the network to the server, which can then deserialize them and perform the
-/// corresponding action.
-#[derive(Debug, Subcommand, Serialize, Deserialize)]
-pub enum Action {
-    /// Enter a key-value pair into the store.
-    Set { key: String, value: String },
+/// Owing to this, it can be used for both the user-facing interaction with the
+/// service (client/server model) and when dealing with inter-node communication
+/// for replication.
+#[derive(Clone)]
+pub struct RemoteNodeClient {
+    /// Inner gRPC client for actions that can be taken.
+    inner: ActionClient<Channel>,
 
-    /// Get a value from the store with the provided key.
-    Get { key: String },
+    /// Address of the cache server.
+    pub addr: String,
+}
 
-    /// Remove a value from the store with the provided key.
-    #[clap(name = "rm")]
-    Remove { key: String },
+impl RemoteNodeClient {
+    /// Provides a new [`RemoteNodeClient`].
+    ///
+    /// The channel used for the connection is not utilised until first use.
+    pub async fn new(addr: String) -> Result<Self> {
+        let ep = tonic::transport::Endpoint::from_str(&format!("http://{}", addr))?;
+        let inner = ActionClient::new(ep.connect_lazy());
+        Ok(Self { inner, addr })
+    }
+}
+
+#[tonic::async_trait]
+impl Client for RemoteNodeClient {
+    async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement> {
+        let req = tonic::Request::new(SetRequest {
+            key,
+            value,
+            timestamp: Utc::now().timestamp(),
+        });
+        let result = self.inner.set(req).await?;
+        Ok(result.into_inner())
+    }
+
+    async fn get(&mut self, key: String) -> anyhow::Result<Option<GetResponse>> {
+        let req = tonic::Request::new(GetRequest { key });
+        let response = self.inner.get(req).await?.into_inner();
+        if response.value.is_some() {
+            Ok(Some(response))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn remove(&mut self, key: String) -> anyhow::Result<Acknowledgement> {
+        let req = tonic::Request::new(RemoveRequest { key });
+        let result = self.inner.remove(req).await?;
+        Ok(result.into_inner())
+    }
 }

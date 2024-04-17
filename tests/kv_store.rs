@@ -15,11 +15,11 @@ async fn get_stored_value() -> Result<()> {
     store.set("key2".to_owned(), "value2".to_owned()).await?;
 
     assert_eq!(
-        store.get("key1".to_owned()).await?,
+        store.get("key1".to_owned()).await?.unwrap().value,
         Some("value1".to_owned())
     );
     assert_eq!(
-        store.get("key2".to_owned()).await?,
+        store.get("key2".to_owned()).await?.unwrap().value,
         Some("value2".to_owned())
     );
 
@@ -27,11 +27,11 @@ async fn get_stored_value() -> Result<()> {
     drop(store);
     let store = KvStore::open(temp_dir.path())?;
     assert_eq!(
-        store.get("key1".to_owned()).await?,
+        store.get("key1".to_owned()).await?.unwrap().value,
         Some("value1".to_owned())
     );
     assert_eq!(
-        store.get("key2".to_owned()).await?,
+        store.get("key2".to_owned()).await?.unwrap().value,
         Some("value2".to_owned())
     );
 
@@ -45,12 +45,12 @@ async fn overwrite_value() -> Result<()> {
 
     store.set("key1".to_owned(), "value1".to_owned()).await?;
     assert_eq!(
-        store.get("key1".to_owned()).await?,
+        store.get("key1".to_owned()).await?.unwrap().value,
         Some("value1".to_owned())
     );
     store.set("key1".to_owned(), "value2".to_owned()).await?;
     assert_eq!(
-        store.get("key1".to_owned()).await?,
+        store.get("key1".to_owned()).await?.unwrap().value,
         Some("value2".to_owned())
     );
 
@@ -58,12 +58,12 @@ async fn overwrite_value() -> Result<()> {
     drop(store);
     let store = KvStore::open(temp_dir.path())?;
     assert_eq!(
-        store.get("key1".to_owned()).await?,
+        store.get("key1".to_owned()).await?.unwrap().value,
         Some("value2".to_owned())
     );
     store.set("key1".to_owned(), "value3".to_owned()).await?;
     assert_eq!(
-        store.get("key1".to_owned()).await?,
+        store.get("key1".to_owned()).await?.unwrap().value,
         Some("value3".to_owned())
     );
 
@@ -143,7 +143,10 @@ async fn compaction() -> Result<()> {
         let store = KvStore::open(temp_dir.path())?;
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
-            assert_eq!(store.get(key).await?, Some(format!("{}", iter)));
+            assert_eq!(
+                store.get(key).await?.unwrap().value,
+                Some(format!("{}", iter))
+            );
         }
         return Ok(());
     }
@@ -189,7 +192,7 @@ async fn randomised_retrieval() -> Result<()> {
     let store = KvStore::open(temp_dir.path())?;
 
     for (k, v) in value_tracker {
-        assert_eq!(store.get(k).await?, Some(v));
+        assert_eq!(store.get(k).await?.unwrap().value, Some(v));
     }
 
     Ok(())
@@ -215,7 +218,7 @@ async fn concurrent_set() -> Result<()> {
 
     for i in 0..1000 {
         assert_eq!(
-            store.get(format!("key{}", i)).await.unwrap(),
+            store.get(format!("key{}", i)).await.unwrap().unwrap().value,
             Some(format!("value{}", i))
         );
     }
@@ -225,7 +228,7 @@ async fn concurrent_set() -> Result<()> {
     let store = KvStore::open(temp_dir.path())?;
     for i in 0..1000 {
         assert_eq!(
-            store.get(format!("key{}", i)).await.unwrap(),
+            store.get(format!("key{}", i)).await.unwrap().unwrap().value,
             Some(format!("value{}", i))
         );
     }
@@ -251,7 +254,12 @@ async fn concurrent_get() -> Result<()> {
             for i in 0..100 {
                 let key_id = (i + thread_id) % 100;
                 assert_eq!(
-                    store.get(format!("key{}", key_id)).await.unwrap(),
+                    store
+                        .get(format!("key{}", key_id))
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .value,
                     Some(format!("value{}", key_id))
                 );
             }
@@ -272,7 +280,12 @@ async fn concurrent_get() -> Result<()> {
             for i in 0..100 {
                 let key_id = (i + thread_id) % 100;
                 assert_eq!(
-                    store.get(format!("key{}", key_id)).await.unwrap(),
+                    store
+                        .get(format!("key{}", key_id))
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .value,
                     Some(format!("value{}", key_id))
                 );
             }

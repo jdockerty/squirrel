@@ -1,14 +1,18 @@
 use clap::Parser;
-use sqrl::actions;
-use sqrl::actions::action_server::Action as ActionSrv;
-use sqrl::actions::action_server::ActionServer;
+use futures::StreamExt;
+use sqrl::client::RemoteNodeClient;
+use sqrl::replication;
+use sqrl::replication::ReplicatedServer;
 use sqrl::KvStore;
-use sqrl::KvsEngine;
+use sqrl::StandaloneServer;
 use sqrl::ENGINE_FILE;
-use std::sync::Arc;
 use std::{ffi::OsString, path::PathBuf};
 use std::{fmt::Display, net::SocketAddr};
-use tracing::info;
+use tracing::{debug, warn};
+
+mod proto {
+    tonic::include_proto!("actions");
+}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -24,6 +28,18 @@ struct App {
 
     #[arg(long, global = true, default_value = default_log_location())]
     log_file: PathBuf,
+
+    #[cfg(feature = "replication")]
+    #[arg(long, default_value = "follower")]
+    replication_mode: replication::Mode,
+
+    #[cfg(feature = "replication")]
+    #[arg(
+        long,
+        requires_if(replication::Mode::Leader, "replication_mode"),
+        value_delimiter = ','
+    )]
+    followers: Vec<String>,
 }
 
 fn default_log_location() -> OsString {
@@ -48,76 +64,30 @@ impl Display for Engine {
     }
 }
 
-#[derive(Clone)]
-struct KvServer {
-    pub store: Arc<KvStore>,
-}
-
-impl KvServer {
-    pub fn new<P>(path: P) -> anyhow::Result<Self>
-    where
-        P: Into<std::path::PathBuf>,
-    {
-        let store = Arc::new(KvStore::open(path)?);
-        Ok(Self { store })
-    }
-}
-
-#[tonic::async_trait]
-impl ActionSrv for KvServer {
-    async fn get(
-        &self,
-        req: tonic::Request<actions::GetRequest>,
-    ) -> tonic::Result<tonic::Response<actions::GetResponse>, tonic::Status> {
-        let req = req.into_inner();
-        let value = self.store.get(req.key).await.unwrap();
-        Ok(tonic::Response::new(actions::GetResponse { value }))
-    }
-    async fn set(
-        &self,
-        req: tonic::Request<actions::SetRequest>,
-    ) -> tonic::Result<tonic::Response<actions::Acknowledgement>, tonic::Status> {
-        let req = req.into_inner();
-        self.store.set(req.key, req.value).await.unwrap();
-        Ok(tonic::Response::new(actions::Acknowledgement {
-            success: true,
-        }))
-    }
-    async fn remove(
-        &self,
-        req: tonic::Request<actions::RemoveRequest>,
-    ) -> tonic::Result<tonic::Response<actions::Acknowledgement>, tonic::Status> {
-        let req = req.into_inner();
-        match self.store.remove(req.key).await {
-            Ok(_) => Ok(tonic::Response::new(actions::Acknowledgement {
-                success: true,
-            })),
-            Err(_) => Ok(tonic::Response::new(actions::Acknowledgement {
-                success: false,
-            })),
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let app = App::parse();
-
     // We must error if the previous storage engine was not 'sqrl' as it is incompatible.
     KvStore::engine_is_sqrl(app.engine_name.to_string(), app.log_file.join(ENGINE_FILE))?;
-    let srv = KvServer::new(app.log_file)?;
-
-    info!(
-        "sqrl-server version: {}, engine: {}",
-        env!("CARGO_PKG_VERSION"),
-        app.engine_name
-    );
-
-    info!("Listening on {}", app.addr);
-    tonic::transport::Server::builder()
-        .add_service(ActionServer::new(srv))
-        .serve(app.addr)
-        .await?;
-
-    Ok(())
+    match app.replication_mode {
+        replication::Mode::Leader => {
+            assert_eq!(
+                app.followers.len(),
+                2,
+                "Only 2 followers are configurable at present"
+            );
+            let clients = futures::stream::iter(app.followers.iter())
+                .filter_map(|f| async move { RemoteNodeClient::new(f.to_string()).await.ok() })
+                .collect::<Vec<RemoteNodeClient>>()
+                .await;
+            debug!("Replicating to {} followers", clients.len());
+            if clients.len() > 3 {
+                warn!("Replicating to many followers can greatly impact write performance");
+            }
+            ReplicatedServer::new(clients.into(), app.log_file, app.addr)?
+                .run()
+                .await
+        }
+        replication::Mode::Follower => StandaloneServer::new(app.log_file, app.addr)?.run().await,
+    }
 }

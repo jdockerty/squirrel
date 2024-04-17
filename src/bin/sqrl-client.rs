@@ -1,7 +1,7 @@
 use clap::Parser;
-use sqrl::actions::action_client::ActionClient;
-use sqrl::actions::{GetRequest, SetRequest};
-use sqrl::client::Action;
+
+use sqrl::action::Action;
+use sqrl::client::{Client, RemoteNodeClient};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -16,26 +16,22 @@ struct App {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = App::parse();
-    let mut client = ActionClient::connect(format!("http://{}", cli.server)).await?;
+    let mut client = RemoteNodeClient::new(cli.server).await?;
 
     match cli.subcmd {
         Action::Set { key, value } => {
-            client
-                .set(tonic::Request::new(SetRequest { key, value }))
-                .await?;
+            client.set(key, value).await?;
         }
         Action::Get { key } => {
-            let response = client.get(tonic::Request::new(GetRequest { key })).await?;
-            match response.into_inner().value {
-                Some(v) => println!("{}", v),
+            let response = client.get(key).await?;
+            match response {
+                Some(v) => println!("{}", v.value.unwrap()),
                 None => println!("Key not found"),
             }
         }
         Action::Remove { key } => {
-            let response = client
-                .remove(tonic::Request::new(sqrl::actions::RemoveRequest { key }))
-                .await?;
-            match response.into_inner().success {
+            let response = client.remove(key).await?;
+            match response.success {
                 true => {}
                 false => {
                     eprintln!("Key not found");
