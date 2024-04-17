@@ -8,6 +8,26 @@ A (replicated) key-value store which uses a simple implementation of [bitcask](h
 
 This follows a simple structure and exposes a very common API surface: `set(k,v)`, `get(k)`, and `remove(k)`.
 
+### Get
+
+A `get(k)` operation will read from the running store via its `keydir`. The value
+**must** exist here in order for it to be returned[^1], as the `keydir` contains a
+mapping of all known values and their respective offsets in the active or commpacted
+log files.
+
+[^1]: When a call to `open` is done, the directory is scanned for any log files,
+which means that in the event of a crash or restart the `keydir` is always rebuilt
+to its prior state.
+
+If a key exists its containing log file is opened, the offset is seeked, and the
+entry deserialised for return.
+
+In the event of a `None` value, this signifies either a tombstone value (from prior removal)
+or a key which has never existed. In either case, the value does not exist in the
+`keydir` so no value is returned.
+
+### Set
+
 ```mermaid
 sequenceDiagram
     participant client
@@ -26,6 +46,8 @@ sequenceDiagram
 
 > [!NOTE]
 > For now, both keys and values are restricted to `String` types.
+
+### Remove
 
 ## Notes
 
