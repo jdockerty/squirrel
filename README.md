@@ -2,7 +2,7 @@
 
 _As in "[to squirrel away][squirrel-away]"._
 
-A (replicated) key-value store which uses a simple implementation of [bitcask](https://github.com/basho/bitcask/blob/develop/doc/bitcask-intro.pdf) as the underlying storage mechanism.
+A (replicated) persistent key-value store which uses a simple implementation of [bitcask](https://github.com/basho/bitcask/blob/develop/doc/bitcask-intro.pdf) as the underlying storage mechanism.
 
 ## How it works
 
@@ -48,6 +48,17 @@ sequenceDiagram
 > For now, both keys and values are restricted to `String` types.
 
 ### Remove
+
+A call to `remove(k)` is similar to `get(k)`, except a tombstone value, represented
+by `None`, is appended to the active log file and updated in the `keydir`.
+
+The tombstone value signifies that the entry should be dropped on the next compaction
+cycle[^2]. This means that the value will no longer be present afterwards.
+
+[^2]: Compaction is not a background job, it is a simple check over `MAX_LOG_FILE_SIZE`
+after either a `set` or `remove` operation, as these cause an append to the active log file.
+
+Attempting to remove a key which does not exist will result in an error.
 
 ## Notes
 
