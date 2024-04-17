@@ -60,6 +60,16 @@ after either a `set` or `remove` operation, as these cause an append to the acti
 
 Attempting to remove a key which does not exist will result in an error.
 
+### Client/Server
+
+TL;DR it uses gRPC with `tonic`.
+
+See [`client.rs`](./src/client.rs)/[`server.rs`](./src/server.rs)/[`proto`](./proto/) definitions.
+
+### Replication
+
+A simplistic strategy for replication is achieved via the [`replication`](./src/replication/mod.rs) crate.
+
 ## Notes
 
 This was initially built through my implementation of the PingCAP talent plan course for building a key-value store in Rust:
