@@ -12,14 +12,14 @@ This follows a simple structure and exposes a very common API surface: `set(k,v)
 
 A `get(k)` operation will read from the running store via its `keydir`. The value
 **must** exist here in order for it to be returned[^1], as the `keydir` contains a
-mapping of all known values and their respective offsets in the active or commpacted
+mapping of all known values and their respective offsets in the active or compacted
 log files.
 
-[^1]: When a call to `open` is done, the directory is scanned for any log files,
+[^1]: When a call to `open` is made, the directory is scanned for any log files,
 which means that in the event of a crash or restart the `keydir` is always rebuilt
 to its prior state.
 
-If a key exists its containing log file is opened, the offset is seeked, and the
+If a key exists, its containing log file is opened, the offset is seeked to, and the
 entry deserialised for return.
 
 In the event of a `None` value, this signifies either a tombstone value (from prior removal)
