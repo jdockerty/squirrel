@@ -26,7 +26,6 @@ pub enum Operation {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct StoreValue(pub Option<Vec<u8>>);
 
-
 impl From<&str> for StoreValue {
     fn from(value: &str) -> Self {
         StoreValue(Some(value.into()))
