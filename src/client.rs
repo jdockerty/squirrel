@@ -6,6 +6,7 @@ use crate::proto::action_client::ActionClient;
 use crate::proto::{Acknowledgement, GetResponse, RemoveRequest};
 use crate::proto::{GetRequest, SetRequest};
 pub use crate::replication::ReplicatedServer;
+use crate::store::StoreValue;
 use crate::Result;
 
 /// A client used for interacting with the [`KvStore`] via gRPC requests.
@@ -13,7 +14,7 @@ use crate::Result;
 pub trait Client {
     async fn get(&mut self, key: String) -> anyhow::Result<Option<GetResponse>>;
 
-    async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement>;
+    async fn set(&mut self, key: String, value: StoreValue) -> anyhow::Result<Acknowledgement>;
 
     async fn remove(&mut self, key: String) -> anyhow::Result<Acknowledgement>;
 }
@@ -45,7 +46,8 @@ impl RemoteNodeClient {
 
 #[tonic::async_trait]
 impl Client for RemoteNodeClient {
-    async fn set(&mut self, key: String, value: String) -> anyhow::Result<Acknowledgement> {
+    async fn set(&mut self, key: String, value: StoreValue) -> anyhow::Result<Acknowledgement> {
+        let value = value.0.unwrap_or_default();
         let req = tonic::Request::new(SetRequest {
             key,
             value,

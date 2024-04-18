@@ -2,6 +2,7 @@ use crate::proto::{
     action_server::{Action, ActionServer},
     Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetRequest,
 };
+use crate::store::StoreValue;
 use crate::KvStore;
 use crate::KvsEngine;
 use std::{net::SocketAddr, sync::Arc};
@@ -46,14 +47,8 @@ impl Action for StandaloneServer {
     ) -> tonic::Result<tonic::Response<GetResponse>, tonic::Status> {
         let req = req.into_inner();
         match self.store.get(req.key).await.unwrap() {
-            Some(v) => Ok(tonic::Response::new(GetResponse {
-                value: v.value,
-                timestamp: v.timestamp,
-            })),
-            None => Ok(tonic::Response::new(GetResponse {
-                value: None,
-                timestamp: 0,
-            })),
+            Some(value) => Ok(tonic::Response::new(GetResponse { value: value.0 })),
+            None => Ok(tonic::Response::new(GetResponse { value: None })),
         }
     }
 
@@ -62,7 +57,10 @@ impl Action for StandaloneServer {
         req: tonic::Request<SetRequest>,
     ) -> tonic::Result<tonic::Response<Acknowledgement>, tonic::Status> {
         let req = req.into_inner();
-        self.store.set(req.key, req.value).await.unwrap();
+        self.store
+            .set(req.key, StoreValue(Some(req.value)))
+            .await
+            .unwrap();
         Ok(tonic::Response::new(Acknowledgement { success: true }))
     }
 

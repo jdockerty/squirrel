@@ -2,6 +2,7 @@ use clap::Parser;
 
 use sqrl::action::Action;
 use sqrl::client::{Client, RemoteNodeClient};
+use sqrl::StoreValue;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -20,12 +21,17 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.subcmd {
         Action::Set { key, value } => {
-            client.set(key, value).await?;
+            client
+                .set(key, StoreValue(Some(value.into_bytes())))
+                .await?;
         }
         Action::Get { key } => {
             let response = client.get(key).await?;
             match response {
-                Some(v) => println!("{}", v.value.unwrap()),
+                Some(v) => {
+                    let out = String::from_utf8_lossy(v.value());
+                    println!("{out}");
+                }
                 None => println!("Key not found"),
             }
         }
