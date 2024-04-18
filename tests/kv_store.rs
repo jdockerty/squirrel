@@ -1,5 +1,5 @@
 use rand::Rng;
-use sqrl::{KvStore, KvsEngine, Result};
+use sqrl::{KvStore, KvsEngine, Result, StoreValue};
 use std::{collections::HashMap, sync::Arc};
 use tempfile::TempDir;
 use tokio::sync::Barrier;
@@ -11,28 +11,28 @@ async fn get_stored_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
 
-    store.set("key1".to_owned(), "value1".to_owned()).await?;
-    store.set("key2".to_owned(), "value2".to_owned()).await?;
+    store.set("key1".into(), "value1".into()).await?;
+    store.set("key2".into(), "value2".into()).await?;
 
     assert_eq!(
-        store.get("key1".to_owned()).await?.unwrap().value,
-        Some("value1".to_owned())
+        store.get("key1".into()).await?.unwrap().0,
+        Some("value1".into())
     );
     assert_eq!(
-        store.get("key2".to_owned()).await?.unwrap().value,
-        Some("value2".to_owned())
+        store.get("key2".into()).await?.unwrap().0,
+        Some("value2".into())
     );
 
     // Open from disk again and check persistent data
     drop(store);
     let store = KvStore::open(temp_dir.path())?;
     assert_eq!(
-        store.get("key1".to_owned()).await?.unwrap().value,
-        Some("value1".to_owned())
+        store.get("key1".into()).await?.unwrap().0,
+        Some("value1".into())
     );
     assert_eq!(
-        store.get("key2".to_owned()).await?.unwrap().value,
-        Some("value2".to_owned())
+        store.get("key2".into()).await?.unwrap().0,
+        Some("value2".into())
     );
 
     Ok(())
@@ -43,28 +43,28 @@ async fn overwrite_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
 
-    store.set("key1".to_owned(), "value1".to_owned()).await?;
+    store.set("key1".into(), "value1".into()).await?;
     assert_eq!(
-        store.get("key1".to_owned()).await?.unwrap().value,
-        Some("value1".to_owned())
+        store.get("key1".into()).await?.unwrap().0,
+        Some("value1".into())
     );
-    store.set("key1".to_owned(), "value2".to_owned()).await?;
+    store.set("key1".into(), "value2".into()).await?;
     assert_eq!(
-        store.get("key1".to_owned()).await?.unwrap().value,
-        Some("value2".to_owned())
+        store.get("key1".into()).await?.unwrap().0,
+        Some("value2".into())
     );
 
     // Open from disk again and check persistent data
     drop(store);
     let store = KvStore::open(temp_dir.path())?;
     assert_eq!(
-        store.get("key1".to_owned()).await?.unwrap().value,
-        Some("value2".to_owned())
+        store.get("key1".into()).await?.unwrap().0,
+        Some("value2".into())
     );
-    store.set("key1".to_owned(), "value3".to_owned()).await?;
+    store.set("key1".into(), "value3".into()).await?;
     assert_eq!(
-        store.get("key1".to_owned()).await?.unwrap().value,
-        Some("value3".to_owned())
+        store.get("key1".into()).await?.unwrap().0,
+        Some("value3".into())
     );
 
     Ok(())
@@ -76,13 +76,13 @@ async fn get_non_existent_value() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
 
-    store.set("key1".to_owned(), "value1".to_owned()).await?;
-    assert_eq!(store.get("key2".to_owned()).await?, None);
+    store.set("key1".into(), "value1".into()).await?;
+    assert_eq!(store.get("key2".into()).await?, None);
 
     // Open from disk again and check persistent data
     drop(store);
     let store = KvStore::open(temp_dir.path())?;
-    assert_eq!(store.get("key2".to_owned()).await?, None);
+    assert_eq!(store.get("key2".into()).await?, None);
 
     Ok(())
 }
@@ -91,7 +91,7 @@ async fn get_non_existent_value() -> Result<()> {
 async fn remove_non_existent_key() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
-    assert!(store.remove("key1".to_owned()).await.is_err());
+    assert!(store.remove("key1".into()).await.is_err());
     Ok(())
 }
 
@@ -99,9 +99,9 @@ async fn remove_non_existent_key() -> Result<()> {
 async fn remove_key() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
-    store.set("key1".to_owned(), "value1".to_owned()).await?;
-    assert!(store.remove("key1".to_owned()).await.is_ok());
-    assert_eq!(store.get("key1".to_owned()).await?, None);
+    store.set("key1".into(), "value1".into()).await?;
+    assert!(store.remove("key1".into()).await.is_ok());
+    assert_eq!(store.get("key1".into()).await?, None);
     Ok(())
 }
 
@@ -128,7 +128,7 @@ async fn compaction() -> Result<()> {
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
             let value = format!("{}", iter);
-            store.set(key, value).await?;
+            store.set(key, value.into()).await?;
         }
 
         let new_size = dir_size();
@@ -144,8 +144,8 @@ async fn compaction() -> Result<()> {
         for key_id in 0..1000 {
             let key = format!("key{}", key_id);
             assert_eq!(
-                store.get(key).await?.unwrap().value,
-                Some(format!("{}", iter))
+                store.get(key).await?.unwrap().0,
+                Some(format!("{}", iter).into())
             );
         }
         return Ok(());
@@ -161,7 +161,7 @@ async fn randomised_retrieval() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
 
-    let mut value_tracker = HashMap::new();
+    let mut value_tracker: HashMap<String, StoreValue> = HashMap::new();
     let mut rng = rand::thread_rng();
     for i in 0..1000 {
         let key = format!("key{}", i);
@@ -170,13 +170,13 @@ async fn randomised_retrieval() -> Result<()> {
         // Always set some random keys on every iteration
         for _ in 0..100 {
             store
-                .set(key.clone(), format!("value{}", rng.gen::<i32>()))
+                .set(key.clone(), format!("value{}", rng.gen::<i32>()).into())
                 .await?;
         }
 
         if rng.gen::<usize>() % 2 == 0 {
-            store.set(key.clone(), value.clone()).await?;
-            value_tracker.insert(key.clone(), value.clone());
+            store.set(key.clone(), value.clone().into()).await?;
+            value_tracker.insert(key.clone(), value.into());
         } else {
             match store.remove(key.clone()).await {
                 Ok(_) => {
@@ -192,7 +192,7 @@ async fn randomised_retrieval() -> Result<()> {
     let store = KvStore::open(temp_dir.path())?;
 
     for (k, v) in value_tracker {
-        assert_eq!(store.get(k).await?.unwrap().value, Some(v));
+        assert_eq!(store.get(k).await?.unwrap(), v);
     }
 
     Ok(())
@@ -208,7 +208,7 @@ async fn concurrent_set() -> Result<()> {
         let barrier = barrier.clone();
         tokio::spawn(async move {
             store
-                .set(format!("key{}", i), format!("value{}", i))
+                .set(format!("key{}", i), format!("value{}", i).into())
                 .await
                 .unwrap();
             barrier.wait().await;
@@ -218,8 +218,8 @@ async fn concurrent_set() -> Result<()> {
 
     for i in 0..1000 {
         assert_eq!(
-            store.get(format!("key{}", i)).await.unwrap().unwrap().value,
-            Some(format!("value{}", i))
+            store.get(format!("key{}", i)).await.unwrap().unwrap().0,
+            Some(format!("value{}", i).into())
         );
     }
 
@@ -228,8 +228,8 @@ async fn concurrent_set() -> Result<()> {
     let store = KvStore::open(temp_dir.path())?;
     for i in 0..1000 {
         assert_eq!(
-            store.get(format!("key{}", i)).await.unwrap().unwrap().value,
-            Some(format!("value{}", i))
+            store.get(format!("key{}", i)).await.unwrap().unwrap().0,
+            Some(format!("value{}", i).into())
         );
     }
 
@@ -242,7 +242,7 @@ async fn concurrent_get() -> Result<()> {
     let store = KvStore::open(temp_dir.path())?;
     for i in 0..100 {
         store
-            .set(format!("key{}", i), format!("value{}", i))
+            .set(format!("key{}", i), format!("value{}", i).into())
             .await
             .unwrap();
     }
@@ -259,8 +259,8 @@ async fn concurrent_get() -> Result<()> {
                         .await
                         .unwrap()
                         .unwrap()
-                        .value,
-                    Some(format!("value{}", key_id))
+                        .0,
+                    Some(format!("value{}", key_id).into())
                 );
             }
         });
@@ -285,8 +285,8 @@ async fn concurrent_get() -> Result<()> {
                         .await
                         .unwrap()
                         .unwrap()
-                        .value,
-                    Some(format!("value{}", key_id))
+                        .0,
+                    Some(format!("value{}", key_id).into())
                 );
             }
         });
