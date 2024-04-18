@@ -1,5 +1,4 @@
 use crate::engine::KvsEngine;
-use crate::proto::GetResponse;
 use crate::{KvStoreError, Result};
 use crate::{LOG_PREFIX, MAX_LOG_FILE_SIZE};
 use dashmap::DashMap;
@@ -22,6 +21,22 @@ pub enum Operation {
     Set,
     Get,
     Remove,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct StoreValue(pub Option<Vec<u8>>);
+
+
+impl From<&str> for StoreValue {
+    fn from(value: &str) -> Self {
+        StoreValue(Some(value.into()))
+    }
+}
+
+impl From<String> for StoreValue {
+    fn from(value: String) -> Self {
+        StoreValue(Some(value.into_bytes()))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -78,7 +93,7 @@ struct LogEntry {
     /// the entry with the most recent timestamp wins.
     timestamp: i64,
     key: String,
-    value: Option<String>,
+    value: Option<StoreValue>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -104,8 +119,8 @@ struct StoreConfig {
 
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
-    async fn set(&self, key: String, value: String) -> Result<()> {
-        debug!(key, value, "Setting key");
+    async fn set(&self, key: String, value: StoreValue) -> Result<()> {
+        debug!(key, "Setting key");
         let timestamp = chrono::Utc::now().timestamp();
         let entry = LogEntry {
             timestamp,
@@ -151,7 +166,7 @@ impl KvsEngine for KvStore {
     ///
     /// The timestamp is typically used with replication, as the value acts as
     /// a version number and conflict resolution mechanism.
-    async fn get(&self, key: String) -> Result<Option<GetResponse>> {
+    async fn get(&self, key: String) -> Result<Option<StoreValue>> {
         debug!(key, "Getting key");
         match self.keydir.get(&key) {
             Some(entry) => {
@@ -166,13 +181,7 @@ impl KvsEngine for KvStore {
                 entry_file.seek(SeekFrom::Start(entry.offset as u64))?;
                 let log_entry: LogEntry = bincode::deserialize_from(entry_file)?;
                 match log_entry.value {
-                    Some(value) => {
-                        debug!(value, "Value exists");
-                        Ok(Some(GetResponse {
-                            value: Some(value),
-                            timestamp: log_entry.timestamp,
-                        }))
-                    }
+                    Some(value) => Ok(Some(value)),
                     // This is a tombstone value and equates to a deleted key and
                     // the "Key not found" scenario.
                     None => {
@@ -190,7 +199,7 @@ impl KvsEngine for KvStore {
         debug!(key, "Removing key");
         match self.keydir.remove(&key) {
             Some(_entry) => {
-                let tombstone = LogEntry {
+                let tombstone: LogEntry = LogEntry {
                     timestamp: chrono::Utc::now().timestamp(),
                     operation: Operation::Remove,
                     key: key.clone(),

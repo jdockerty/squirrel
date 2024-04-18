@@ -27,7 +27,7 @@ mod store;
 pub use engine::KvsEngine;
 pub use error::Error as KvStoreError;
 pub use server::StandaloneServer;
-pub use store::KvStore;
+pub use store::{KvStore, StoreValue};
 pub mod action;
 pub mod client;
 
