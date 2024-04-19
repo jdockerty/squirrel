@@ -23,6 +23,12 @@ pub enum Operation {
     Remove,
 }
 
+/// Value for the store, associated to a key.
+///
+/// This is a simple wrapper around a [`Vec<u8>`] which represent any value that
+/// can be (de)serialised into a [`LogEntry`].
+///
+/// TODO: Can this be better represented as a generic, rather than a "new type"?
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Value(pub Option<Vec<u8>>);
 
