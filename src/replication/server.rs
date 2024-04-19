@@ -8,6 +8,7 @@ use tracing::{debug, info};
 use crate::client::{Client, RemoteNodeClient};
 use crate::proto::action_server::{Action, ActionServer};
 use crate::proto::{Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetRequest};
+use crate::store::Value;
 use crate::{KvsEngine, StandaloneServer};
 
 /// Wrapped implementation of a [`StandaloneServer`] with an awareness of multiple
@@ -67,12 +68,9 @@ impl Action for ReplicatedServer {
         let key = req.key.clone();
         let response = match self.server.store.get(key).await.unwrap() {
             Some(r) => r,
-            None => GetResponse {
-                value: None,
-                timestamp: 0,
-            },
+            None => Value(None),
         };
-        Ok(tonic::Response::new(response))
+        Ok(tonic::Response::new(GetResponse { value: response.0 }))
     }
 
     async fn set(
@@ -83,14 +81,16 @@ impl Action for ReplicatedServer {
         debug!("Setting value to local store");
         self.server
             .store
-            .set(req.key.clone(), req.value.clone())
+            .set(req.key.clone(), Value(Some(req.value.clone())))
             .await
             .unwrap();
 
         debug!("Replicating to remote replicas");
         futures::stream::iter(self.remote_replicas.lock().await.iter_mut())
             .for_each(|r| async {
-                r.set(req.key.clone(), req.value.clone()).await.unwrap();
+                r.set(req.key.clone(), Value(Some(req.value.clone())))
+                    .await
+                    .unwrap();
             })
             .await;
 
@@ -179,7 +179,7 @@ mod test {
         thread::sleep(Duration::from_millis(1500));
 
         replicated_client
-            .set("key1".to_string(), "value1".to_string())
+            .set("key1".to_string(), "value1".into())
             .await
             .unwrap();
 
@@ -192,7 +192,7 @@ mod test {
                 .unwrap()
                 .unwrap()
                 .value,
-            Some("value1".to_string()),
+            Some("value1".into()),
             "No replication for initial value"
         );
         assert_eq!(
@@ -206,12 +206,12 @@ mod test {
                 .unwrap()
                 .unwrap()
                 .value,
-            Some("value1".to_string()),
+            Some("value1".into()),
             "No replication for initial value"
         );
 
         replicated_client
-            .set("key1".to_string(), "overwritten".to_string())
+            .set("key1".to_string(), "overwritten".into())
             .await
             .unwrap();
         wait_for_replication();
@@ -222,7 +222,7 @@ mod test {
                 .unwrap()
                 .unwrap()
                 .value,
-            Some("overwritten".to_string()),
+            Some("overwritten".into()),
             "No replication for overwritten value"
         );
         assert_eq!(
@@ -232,7 +232,7 @@ mod test {
                 .unwrap()
                 .unwrap()
                 .value,
-            Some("overwritten".to_string()),
+            Some("overwritten".into()),
             "No replication for overwritten value"
         );
 
