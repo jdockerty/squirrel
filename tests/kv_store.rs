@@ -1,5 +1,5 @@
 use rand::Rng;
-use sqrl::{KvStore, KvsEngine, Result, StoreValue};
+use sqrl::{KvStore, KvsEngine, Result, Value};
 use std::{collections::HashMap, sync::Arc};
 use tempfile::TempDir;
 use tokio::sync::Barrier;
@@ -161,7 +161,7 @@ async fn randomised_retrieval() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let store = KvStore::open(temp_dir.path())?;
 
-    let mut value_tracker: HashMap<String, StoreValue> = HashMap::new();
+    let mut value_tracker: HashMap<String, Value> = HashMap::new();
     let mut rng = rand::thread_rng();
     for i in 0..1000 {
         let key = format!("key{}", i);

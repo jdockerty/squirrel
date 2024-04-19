@@ -24,17 +24,17 @@ pub enum Operation {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct StoreValue(pub Option<Vec<u8>>);
+pub struct Value(pub Option<Vec<u8>>);
 
-impl From<&str> for StoreValue {
+impl From<&str> for Value {
     fn from(value: &str) -> Self {
-        StoreValue(Some(value.into()))
+        Value(Some(value.into()))
     }
 }
 
-impl From<String> for StoreValue {
+impl From<String> for Value {
     fn from(value: String) -> Self {
-        StoreValue(Some(value.into_bytes()))
+        Value(Some(value.into_bytes()))
     }
 }
 
@@ -92,7 +92,7 @@ struct LogEntry {
     /// the entry with the most recent timestamp wins.
     timestamp: i64,
     key: String,
-    value: Option<StoreValue>,
+    value: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -118,7 +118,7 @@ struct StoreConfig {
 
 impl KvsEngine for KvStore {
     /// Set the value of a key by inserting the value into the store for the given key.
-    async fn set(&self, key: String, value: StoreValue) -> Result<()> {
+    async fn set(&self, key: String, value: Value) -> Result<()> {
         debug!(key, "Setting key");
         let timestamp = chrono::Utc::now().timestamp();
         let entry = LogEntry {
@@ -165,7 +165,7 @@ impl KvsEngine for KvStore {
     ///
     /// The timestamp is typically used with replication, as the value acts as
     /// a version number and conflict resolution mechanism.
-    async fn get(&self, key: String) -> Result<Option<StoreValue>> {
+    async fn get(&self, key: String) -> Result<Option<Value>> {
         debug!(key, "Getting key");
         match self.keydir.get(&key) {
             Some(entry) => {

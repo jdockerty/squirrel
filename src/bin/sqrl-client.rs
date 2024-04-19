@@ -2,7 +2,7 @@ use clap::Parser;
 
 use sqrl::action::Action;
 use sqrl::client::{Client, RemoteNodeClient};
-use sqrl::StoreValue;
+use sqrl::Value;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -21,9 +21,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.subcmd {
         Action::Set { key, value } => {
-            client
-                .set(key, StoreValue(Some(value.into_bytes())))
-                .await?;
+            client.set(key, Value(Some(value.into_bytes()))).await?;
         }
         Action::Get { key } => {
             let response = client.get(key).await?;

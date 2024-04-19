@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use crate::client::{Client, RemoteNodeClient};
 use crate::proto::action_server::{Action, ActionServer};
 use crate::proto::{Acknowledgement, GetRequest, GetResponse, RemoveRequest, SetRequest};
-use crate::store::StoreValue;
+use crate::store::Value;
 use crate::{KvsEngine, StandaloneServer};
 
 /// Wrapped implementation of a [`StandaloneServer`] with an awareness of multiple
@@ -68,7 +68,7 @@ impl Action for ReplicatedServer {
         let key = req.key.clone();
         let response = match self.server.store.get(key).await.unwrap() {
             Some(r) => r,
-            None => StoreValue(None),
+            None => Value(None),
         };
         Ok(tonic::Response::new(GetResponse { value: response.0 }))
     }
@@ -81,14 +81,14 @@ impl Action for ReplicatedServer {
         debug!("Setting value to local store");
         self.server
             .store
-            .set(req.key.clone(), StoreValue(Some(req.value.clone())))
+            .set(req.key.clone(), Value(Some(req.value.clone())))
             .await
             .unwrap();
 
         debug!("Replicating to remote replicas");
         futures::stream::iter(self.remote_replicas.lock().await.iter_mut())
             .for_each(|r| async {
-                r.set(req.key.clone(), StoreValue(Some(req.value.clone())))
+                r.set(req.key.clone(), Value(Some(req.value.clone())))
                     .await
                     .unwrap();
             })
