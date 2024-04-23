@@ -84,10 +84,16 @@ async fn main() -> anyhow::Result<()> {
             if clients.len() > 3 {
                 warn!("Replicating to many followers can greatly impact write performance");
             }
-            ReplicatedServer::new(clients.into(), app.log_file, app.addr)?
+            ReplicatedServer::new(clients.into(), app.log_file, app.addr)
+                .await?
                 .run()
                 .await
         }
-        replication::Mode::Follower => StandaloneServer::new(app.log_file, app.addr)?.run().await,
+        replication::Mode::Follower => {
+            StandaloneServer::new(app.log_file, app.addr)
+                .await?
+                .run()
+                .await
+        }
     }
 }
