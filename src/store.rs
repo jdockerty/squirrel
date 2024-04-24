@@ -31,7 +31,7 @@ pub enum Operation {
 pub struct StoreWriter {
     active_log_file: PathBuf,
     active_log_handle: Option<Arc<RwLock<File>>>,
-    position: Arc<AtomicUsize>,
+    position: usize,
 }
 
 impl Default for StoreWriter {
@@ -39,7 +39,7 @@ impl Default for StoreWriter {
         StoreWriter {
             active_log_file: PathBuf::default(),
             active_log_handle: None,
-            position: Arc::new(AtomicUsize::new(0)),
+            position: *Arc::new(0),
         }
     }
 }
@@ -207,12 +207,7 @@ impl KvsEngine for KvStore {
                     value: None,
                 };
 
-                let pos = self
-                    .writer
-                    .read()
-                    .unwrap()
-                    .position
-                    .load(std::sync::atomic::Ordering::SeqCst);
+                let pos = self.writer.read().unwrap().position;
                 self.append_to_log(&tombstone)?;
                 debug!(
                     position = pos,
@@ -361,21 +356,17 @@ impl KvStore {
     fn append_to_log(&self, entry: &LogEntry) -> Result<usize> {
         let data = bincode::serialize(&entry)?;
 
-        let write_lock = self.writer.write().unwrap();
-        let pos = write_lock
-            .position
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let mut write_lock = self.writer.write().unwrap();
+        let pos = write_lock.position;
+        write_lock.position += data.len();
         let mut file_lock = write_lock
             .active_log_handle
             .as_ref()
             .ok_or(KvStoreError::NoActiveLogFile)?
             .write()
             .unwrap();
-        file_lock.write_at(&data, pos as u64)?;
+        file_lock.write_at(&data, write_lock.position as u64)?;
         file_lock.flush()?;
-        write_lock
-            .position
-            .fetch_add(data.len(), std::sync::atomic::Ordering::SeqCst);
         // Returning the offset of the entry in the log file after it has been written.
         // This means that the next entry is written after this one.
         Ok(pos)
@@ -490,9 +481,7 @@ impl KvStore {
             .open(&next_log_file_name)?;
         debug!(active_file = next_log_file_name, "Created new log file");
         writer.active_log_file = PathBuf::from(next_log_file_name.clone());
-        writer
-            .position
-            .store(0, std::sync::atomic::Ordering::SeqCst);
+        writer.position = 0;
         writer.active_log_handle = Some(Arc::new(RwLock::new(log_file)));
         Ok(())
     }
