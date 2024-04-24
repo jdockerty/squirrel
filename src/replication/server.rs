@@ -27,7 +27,7 @@ pub struct ReplicatedServer {
 }
 
 impl ReplicatedServer {
-    pub fn new<P>(
+    pub async fn new<P>(
         clients: Mutex<Vec<RemoteNodeClient>>,
         path: P,
         addr: SocketAddr,
@@ -37,7 +37,7 @@ impl ReplicatedServer {
     {
         Ok(Self {
             addr,
-            server: Arc::new(StandaloneServer::new(path, addr)?),
+            server: Arc::new(StandaloneServer::new(path, addr).await?),
             remote_replicas: Arc::new(clients),
         })
     }

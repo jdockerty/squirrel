@@ -16,11 +16,11 @@ pub struct StandaloneServer {
 }
 
 impl StandaloneServer {
-    pub fn new<P>(path: P, addr: SocketAddr) -> anyhow::Result<Self>
+    pub async fn new<P>(path: P, addr: SocketAddr) -> anyhow::Result<Self>
     where
         P: Into<std::path::PathBuf>,
     {
-        let store = Arc::new(KvStore::open(path)?);
+        let store = Arc::new(KvStore::open(path).await?);
         Ok(Self { store, addr })
     }
 
