@@ -151,7 +151,8 @@ impl KvsEngine for KvStore {
                 active_file = ?self.writer.read().unwrap().active_log_file.display(),
                 "Compaction required"
             );
-            self.compact()?;
+            self.compaction_tx.send(()).await.unwrap();
+            self.set_active_log_handle()?;
         }
         Ok(())
     }
@@ -216,13 +217,14 @@ impl KvsEngine for KvStore {
                 );
 
                 if pos as u64 > self.max_log_file_size {
-                    self.compact()?;
                     debug!(
                         current_size = pos,
                         max_log_file_size = self.max_log_file_size,
                         active_file = ?self.writer.read().unwrap().active_log_file.display(),
                         "Compaction required"
                     );
+                    self.compaction_tx.send(()).await.unwrap();
+                    self.set_active_log_handle()?;
                 }
                 Ok(())
             }
@@ -460,7 +462,6 @@ impl KvStore {
             });
         }
 
-        self.set_active_log_handle()?;
         for file in active_files.as_ref() {
             if *file.value() == 0 {
                 debug!(f = ?file.key(), "Removing file which has no entries");
