@@ -1,4 +1,4 @@
-use criterion::{self, criterion_group, criterion_main, BenchmarkId};
+use criterion::{self, black_box, criterion_group, criterion_main, BenchmarkId};
 
 use sqrl::{KvStore, KvsEngine};
 use tokio::runtime::Runtime;
@@ -9,7 +9,7 @@ fn write_direct(c: &mut criterion::Criterion) {
 
     c.bench_with_input(BenchmarkId::new("write", "store"), &store, |b, s| {
         b.to_async(&rt).iter(|| async {
-            s.set("key".to_string(), "value".to_string()).await.unwrap();
+            black_box(s.set("key".to_string(), "value".to_string()).await.unwrap());
         })
     });
 }
@@ -20,7 +20,7 @@ fn read_direct(c: &mut criterion::Criterion) {
 
     c.bench_with_input(BenchmarkId::new("read", "store"), &store, |b, s| {
         b.to_async(&rt).iter(|| async {
-            assert_eq!(s.get("value".to_string()).await.unwrap(), None);
+            assert_eq!(black_box(s.get("value".to_string()).await.unwrap()), None);
         })
     });
 }
